@@ -47,6 +47,7 @@ models voting together) without requiring the heavier dependency.
 
 import numpy as np
 import pandas as pd
+from collections import deque
 from scipy.optimize import curve_fit
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
@@ -395,11 +396,15 @@ def compute_posterior_mean_abilities(responses: dict, fitted_discrimination: np.
 
 
 def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
-                             n_em_steps: int = 4, random_seed: int = 0) -> dict:
+                             n_em_steps: int = 4, random_seed: int = 0,
+                             convergence_tolerance: float = 0.005,
+                             max_em_steps: int = 20,
+                             convergence_window: int = 6,
+                             min_hits_in_window: int = 3) -> dict:
     """
     Runs the full AutoIRT calibration loop (Algorithm 1 in the paper):
     alternates between the M-step (fit ML model, derive IRT parameters)
-    and the E-step (resample abilities), for a fixed number of rounds.
+    and the E-step (resample abilities).
 
     Parameters
     ----------
@@ -413,9 +418,35 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
     n_items : int
         Total number of items in the bank (including cold-start items).
     n_em_steps : int
-        How many rounds of M-step / E-step to run (paper uses 4).
+        MINIMUM number of EM steps to run before checking for convergence
+        (see "termination rule" below). Default 4, matching the paper's
+        own choice, but now used as a floor rather than a hard stop.
     random_seed : int
         Random seed, for reproducibility.
+    convergence_tolerance : float
+        Once past `n_em_steps`, a step "counts" as small if the relative
+        change in training loss from the previous step is below this
+        tolerance. Default 0.005 (0.5% relative change).
+    convergence_window : int
+        How many of the most recent steps to look at when checking for
+        convergence. Default 6.
+    min_hits_in_window : int
+        Stop once at least this many of the last `convergence_window`
+        steps were "small" (see `convergence_tolerance`). Default 3 (i.e.
+        3 of the last 6 steps), which tolerates noisy individual steps
+        without resetting all the progress made in prior steps.
+
+        Tuning note: a smaller window (e.g. 4) or a looser tolerance
+        converges faster, but testing against real DET-phase runs showed
+        this creates false positives -- conditions with a noisy early dip
+        (e.g. ViC Jump 20 in one run) got flagged "converged" as early as
+        step 4-5, while their loss kept dropping substantially for another
+        10+ steps afterward. Widening the window instead of loosening the
+        tolerance avoided that false-positive risk in that same test, at
+        the cost of needing a few more steps on fast-converging runs.
+    max_em_steps : int
+        Hard cap so the loop can't run indefinitely if loss never settles
+        below `convergence_tolerance`. Default 20.
 
     Returns
     -------
@@ -423,24 +454,50 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
         "discrimination"       : final fitted discrimination for every item
         "difficulty"            : final fitted difficulty for every item
         "trained_model"         : the final trained ML ensemble
-        "training_loss_history" : list of dicts, one per EM step, each with
-                                   "step", "loss_nonparametric" (raw ML
-                                   ensemble training loss), and
-                                   "loss_parametric" (loss after projecting
-                                   onto the 3PL curve). Inspect this to check
-                                   whether n_em_steps is actually enough --
-                                   see the module docstring note below on
-                                   the termination rule.
+        "training_loss_history" : list of dicts, one per EM step actually
+                                   run, each with "step", "loss_nonparametric",
+                                   "loss_parametric"
+        "stopped_reason"        : "converged" or "hit_max_em_steps", so you
+                                   can tell which one happened
+        "n_steps_run"           : how many EM steps were actually run
 
     A note on the termination rule
     -------------------------------
-    This function stops after a FIXED number of EM steps (`n_em_steps`,
-    default 4), matching the paper's own choice -- it is not an adaptive
-    "stop when converged" rule. The paper's own justification for 4 steps
-    was empirical: they tracked training loss per EM step and found it
-    plateaus by step 4 (their Figure 6). `training_loss_history` above lets
-    you run that same check yourself rather than assuming their number
-    transfers to a different scale / AutoML backend.
+    Algorithm 1 in the paper (top of page 4) just says "for each EM
+    iteration do" -- it does not define a stopping rule. The paper's own
+    choice of 4 steps comes from a separate empirical observation in their
+    Results section (training loss was roughly constant within 4 steps
+    for THEIR simulation settings), combined with the fact that each
+    M-step requires an expensive AutoML fit. That is not a termination
+    rule that's guaranteed to transfer to a different scale or AutoML
+    backend, which is exactly why it's checked here instead of assumed.
+
+    The standard reference for an automated MCEM stopping rule is Booth,
+    J. G., & Hobert, J. P. (1999), "Maximizing generalized linear mixed
+    model likelihoods with an automated Monte Carlo EM algorithm," JRSS
+    Series B, 61(1), 265-285. Their rule builds a confidence interval for
+    the parameter update at each iteration, using the Monte Carlo error of
+    that update, and stops once the previous estimate falls inside that
+    interval (otherwise it increases the Monte Carlo sample size and
+    continues). That requires machinery this project doesn't have (a
+    standard error on each parameter estimate from repeated MC draws).
+
+    What's implemented here is a simplified stand-in that follows the
+    same spirit using what's already available: track the relative change
+    in training loss (`loss_parametric`) between consecutive EM steps, and
+    stop once that change has been small for MOST of the last few steps.
+    This is a genuine simplification of Booth & Hobert's idea, not a
+    re-implementation of it -- worth stating plainly rather than implying
+    it's the full automated rule.
+
+    Earlier version of this rule required 2 CONSECUTIVE small steps, which
+    turned out to be fragile on small/noisy datasets: a couple of DET-phase
+    conditions (Y/N Vocab Jump 20, ViC Jump 40) hit max_em_steps without
+    ever converging, even though their loss had mostly flattened out --
+    a single noisy step kept resetting the streak back to zero. The rule
+    now instead requires the relative change to be small in at least
+    `min_hits_in_window` of the last `convergence_window` steps, which
+    tolerates one bad step without throwing away all the progress before it.
     """
     n_sessions = int(responses["session_id"].max()) + 1
     # Start with a random draw from the ability prior (theta ~ N(0, sqrt(2.5)))
@@ -457,8 +514,10 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
     fitted_difficulty = None
     trained_model = None
     training_loss_history = []
+    recent_small_change_flags = deque(maxlen=convergence_window)
+    stopped_reason = "hit_max_em_steps"
 
-    for step in range(n_em_steps):
+    for step in range(max_em_steps):
         (fitted_discrimination, fitted_difficulty, trained_model,
          loss_nonparametric, loss_parametric) = calibrate_items_given_abilities(
             responses, items, n_items, ability_estimates, random_seed=random_seed + step,
@@ -469,20 +528,49 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
             "loss_parametric": loss_parametric,
         })
 
-        is_last_step = (step == n_em_steps - 1)
+        # --- Convergence check ---
+        past_minimum_steps = (step + 1) >= n_em_steps
+        if len(training_loss_history) >= 2:
+            previous_loss = training_loss_history[-2]["loss_parametric"]
+            relative_change = abs(loss_parametric - previous_loss) / max(abs(previous_loss), 1e-8)
+            recent_small_change_flags.append(relative_change < convergence_tolerance)
+        else:
+            relative_change = None
+
+        window_full = len(recent_small_change_flags) == convergence_window
+        has_converged = (
+            past_minimum_steps and window_full
+            and sum(recent_small_change_flags) >= min_hits_in_window
+        )
+        is_last_step = has_converged or (step == max_em_steps - 1)
+
+        rel_change_str = f"{relative_change:.4f}" if relative_change is not None else "n/a"
+        print(f"  [AutoIRT] Completed EM step {step + 1}"
+              f"{' (of max ' + str(max_em_steps) + ')' if not has_converged else ''}. "
+              f"(train loss: nonparametric={loss_nonparametric:.4f}, "
+              f"parametric={loss_parametric:.4f}, rel. change={rel_change_str})")
+
         if not is_last_step:
             session_ids, new_thetas = resample_abilities(
                 responses, fitted_discrimination, fitted_difficulty, random_seed=random_seed + step,
             )
             ability_estimates[session_ids] = new_thetas
+        else:
+            stopped_reason = "converged" if has_converged else "hit_max_em_steps"
+            break
 
-        print(f"  [AutoIRT] Completed EM step {step + 1} of {n_em_steps}. "
-              f"(train loss: nonparametric={loss_nonparametric:.4f}, "
-              f"parametric={loss_parametric:.4f})")
+    if stopped_reason == "hit_max_em_steps":
+        print(f"  [AutoIRT] WARNING: reached max_em_steps={max_em_steps} without the "
+              f"relative loss change staying below {convergence_tolerance} for at least "
+              f"{min_hits_in_window} of the last {convergence_window} steps. Training loss "
+              f"may not have fully converged -- check training_loss_history before trusting "
+              f"these item parameters.")
 
     return {
         "discrimination": fitted_discrimination,
         "difficulty": fitted_difficulty,
         "trained_model": trained_model,
         "training_loss_history": training_loss_history,
+        "stopped_reason": stopped_reason,
+        "n_steps_run": len(training_loss_history),
     }
