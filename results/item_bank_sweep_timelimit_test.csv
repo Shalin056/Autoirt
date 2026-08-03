@@ -1,0 +1,2 @@
+n_items,n_sessions,autogluon_time_limit,elapsed_seconds,test_loss_nll,item_grade_pearson_r,item_grade_spearman_r,ability_recovery_pearson_r
+1600,10000,150,2059.2,0.5599714205944115,0.6527654944223602,0.5828091236494598,0.7652917427305793

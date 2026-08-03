@@ -1,49 +1,28 @@
 """
-autoirt_model.py
-================
+Implements the AutoIRT calibration algorithm from Sharpnack et al. (2024),
+"AutoIRT: Calibrating Item Response Theory Models with Automated Machine
+Learning" (Algorithm 1).
 
-This module implements the AutoIRT calibration algorithm from:
+Traditional IRT calibration needs hundreds of responses per item to get a
+reliable difficulty/discrimination estimate. AutoIRT gets around that by
+training a flexible ML model on (ability, item features) -> correct/wrong,
+then translating that model back into interpretable IRT parameters by
+curve-fitting: finding the (a, d) pair whose theoretical IRT curve best
+matches what the ML model predicts across a range of ability levels. This
+repeats a few times, alternating between re-estimating each student's
+ability given the current item parameters (E-step) and re-fitting the ML
+model / re-deriving item parameters given the updated abilities (M-step) --
+Monte Carlo EM.
 
-    Sharpnack et al. (2024), "AutoIRT: Calibrating Item Response Theory
-    Models with Automated Machine Learning"
-    (see their Algorithm 1)
-
-The big idea, explained simply
---------------------------------
-Traditional IRT calibration needs hundreds of responses PER ITEM to
-reliably estimate that item's difficulty and discrimination. AutoIRT
-speeds this up by:
-
-  1. Training a flexible machine learning model (here: an ensemble of
-     RandomForest + XGBoost + LightGBM) to predict "will this student get
-     this item correct?" using the student's estimated ability and the
-     item's raw features (not the clean IRT parameters, just the raw
-     numeric features like word length, frequency, etc.).
-
-  2. "Translating" that flexible ML model back into the classic,
-     interpretable IRT parameters (discrimination `a` and difficulty `d`)
-     by finding the (a, d) pair whose theoretical IRT curve looks as
-     close as possible to what the ML model predicts, across a range of
-     ability levels. This is a curve-fitting step (least squares).
-
-  3. Repeating this a few times in a loop, alternating between:
-       - re-estimating each student's ability given the current item
-         parameters (this is called the "E-step"), and
-       - re-fitting the ML model and re-deriving item parameters given
-         the updated abilities (this is called the "M-step").
-     This loop is called "Monte Carlo Expectation-Maximization" (MCEM).
-
-Why not just use AutoGluon like the original paper?
-------------------------------------------------------
-The paper uses a tool called AutoGluon-tabular, which automatically
-tries many models and combines them. AutoGluon has a large number of
-dependencies and can be slow to install. Here we build a similar
-"stacked ensemble of tree models" by hand using three well-known,
-lightweight libraries (scikit-learn's RandomForest, XGBoost, LightGBM)
-that are already commonly used in industry, and simply average their
-predictions. This captures the same spirit (multiple different tree
-models voting together) without requiring the heavier dependency.
+The paper uses AutoGluon-tabular for the ML step. AutoGluon is a heavy
+dependency, so this uses a hand-built stacked ensemble instead
+(RandomForest + XGBoost + LightGBM, predictions averaged) -- same basic
+idea, lighter footprint.
 """
+
+import shutil
+import tempfile
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -56,32 +35,22 @@ from lightgbm import LGBMClassifier
 from .simulate import three_parameter_logistic
 
 
-# Column names used for every feature table passed to the ML ensemble.
-# Giving the models a labeled pandas DataFrame (instead of a bare numpy
-# array) avoids a harmless but noisy warning that some libraries print
-# when a model trained on named columns is later asked to predict on
-# unnamed data.
+# Giving the models a labeled DataFrame instead of a bare array avoids a
+# harmless warning some libraries print when a model trained on named
+# columns later predicts on unnamed data.
 FEATURE_COLUMNS = ["theta", "feature_1", "feature_2"]
 
-
-# A fixed grid of possible ability (theta) values, used to approximate
-# continuous probability distributions with a discrete set of points.
-# This mirrors the paper's approach (they also use a grid, since theta
-# is a single number and grids work well in one dimension).
+# Grid of possible ability values, used to approximate continuous
+# posterior distributions with a discrete set of points -- same approach
+# the paper uses, since theta is one-dimensional and grids work fine there.
 DEFAULT_THETA_GRID = np.linspace(-8, 8, 161)
 
 
 class GradeEnsembleModel:
-    """
-    A simple stand-in for the paper's AutoML tool (AutoGluon-tabular).
-
-    This trains three different tree-based classifiers on the SAME data
-    and averages their predicted probabilities. Using several different
-    model types and averaging them tends to give more stable, accurate
-    predictions than any single model alone -- this is called
-    "ensembling," and it is the same basic idea AutoGluon uses internally
-    (just with more models and more automation).
-    """
+    """Stand-in for the paper's AutoGluon-tabular step: trains three
+    different tree-based classifiers on the same data and averages their
+    predicted probabilities. Same idea as AutoGluon's internal stacking,
+    just fewer models and no automated search."""
 
     def __init__(self, random_seed: int = 0):
         self.models = [
@@ -94,40 +63,119 @@ class GradeEnsembleModel:
         ]
 
     def fit(self, features: np.ndarray, grades: np.ndarray) -> "GradeEnsembleModel":
-        """Train all three underlying models on the same (features, grades) data."""
         features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
         for model in self.models:
             model.fit(features_df, grades)
         return self
 
     def predict_probability_correct(self, features: np.ndarray) -> np.ndarray:
-        """Average the three models' predicted probability of a correct answer."""
         features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
         predictions = [model.predict_proba(features_df)[:, 1] for model in self.models]
         return np.mean(predictions, axis=0)
 
 
+class AutoGluonGradeModel:
+    """The paper's actual backend, for a direct comparison against
+    GradeEnsembleModel. Same fit/predict_probability_correct interface so
+    it's a drop-in swap -- see `backend=` in calibrate_items_given_abilities
+    and run_autoirt_calibration.
+
+    Needs `pip install autogluon.tabular` (not in requirements.txt by
+    default since it's a heavy install -- multiple GB of dependencies).
+    Also worth running `pip install catboost` separately: the paper's
+    ensemble includes CatBoost, but the base autogluon.tabular install
+    skips it (along with a couple of neural-net models it can't use
+    without extra installs) and just prints warnings and continues
+    without it. AutoGluon still runs fine either way -- this is only
+    about getting the same model set the paper actually used.
+    Raises a clear error if autogluon itself isn't installed rather than
+    failing on some unrelated import error deeper in.
+    """
+
+    def __init__(self, random_seed: int = 0, time_limit: int = 60):
+        try:
+            from autogluon.tabular import TabularPredictor
+        except ImportError as e:
+            raise ImportError(
+                "AutoGluonGradeModel needs autogluon.tabular, which isn't "
+                "installed. Run `pip install autogluon.tabular` first (it's "
+                "a heavy install, expect several GB and a few minutes)."
+            ) from e
+        self._TabularPredictor = TabularPredictor
+        self.random_seed = random_seed
+        # Per-fit time budget passed straight to AutoGluon's `fit(time_limit=...)`.
+        # Higher values let AutoGluon try more/heavier model configurations
+        # per M-step at the cost of longer runtime; see run_backend_comparision.py
+        # and run_item_bank_sweep.py for scripts that vary this.
+        self.time_limit = time_limit
+        self.predictor = None
+        # KNN and the neural net variants are excluded: slowest/heaviest
+        # for negligible gain on this small, purely numeric feature set
+        # (2-3 raw features), so skipping them saves both training time
+        # and on-disk footprint (fewer .pkl files per fit).
+        self.excluded_model_types = ["KNN", "NN_TORCH", "FASTAI"]
+        self._model_dir = tempfile.mkdtemp(prefix="autogluon_tmp_")
+        # Cleanup is tied to this object's lifetime rather than to the end
+        # of fit(): a stacked ensemble's base learners (e.g. CatBoost) can
+        # get lazy-loaded from disk on a later predict call, so the model
+        # directory needs to stay around as long as the model might still
+        # be used. weakref.finalize removes _model_dir only once nothing
+        # holds a reference to this model anymore -- in practice that's
+        # right after the next EM step creates a new model and this one
+        # becomes unreachable, so disk usage stays bounded to one or two
+        # live model folders at a time.
+        #
+        # NOTE (Windows): rmtree with ignore_errors=True will silently
+        # swallow a WinError 32 ("file in use") if some library
+        # (LightGBM/CatBoost/joblib) hasn't released its file handle the
+        # instant this object is garbage collected. If that happens,
+        # folders pile up in %TEMP% anyway -- check %TEMP% for leftover
+        # autogluon_tmp_* folders if disk space is tight.
+        self._cleanup = weakref.finalize(
+            self, shutil.rmtree, self._model_dir, ignore_errors=True,
+        )
+
+    def fit(self, features: np.ndarray, grades: np.ndarray) -> "AutoGluonGradeModel":
+        train_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        train_df["grade"] = grades
+        self.predictor = self._TabularPredictor(
+            label="grade", problem_type="binary", eval_metric="log_loss", verbosity=0,
+            path=self._model_dir,
+        ).fit(
+            train_df, time_limit=self.time_limit, presets="medium_quality",
+            excluded_model_types=self.excluded_model_types,
+        )
+        return self
+
+    def predict_probability_correct(self, features: np.ndarray) -> np.ndarray:
+        features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        return self.predictor.predict_proba(features_df)[1].to_numpy()
+
+
+def _make_grade_model(backend: str, random_seed: int, autogluon_time_limit: int = 60):
+    """Picks the ML backend by name -- "ensemble" (default, RF+XGB+LGBM,
+    no extra install) or "autogluon" (paper's actual tool, needs
+    autogluon.tabular installed separately). autogluon_time_limit only
+    applies to the "autogluon" backend."""
+    if backend == "ensemble":
+        return GradeEnsembleModel(random_seed=random_seed)
+    elif backend == "autogluon":
+        return AutoGluonGradeModel(random_seed=random_seed, time_limit=autogluon_time_limit)
+    raise ValueError(f"Unknown backend '{backend}': use 'ensemble' or 'autogluon'.")
+
+
 def _fit_irt_curve_to_predictions(predicted_probabilities: np.ndarray,
                                    theta_grid: np.ndarray,
                                    fixed_chance: float = 0.25) -> tuple:
-    """
-    Given the ML model's predicted probability-correct curve for ONE item
-    (one value per theta on the grid), find the (discrimination, difficulty)
-    pair whose theoretical 3PL curve is the closest match, in a
-    least-squares sense.
+    """Fits (discrimination, difficulty) to the ML model's predicted
+    probability-correct curve for one item, least-squares style.
 
-    IMPORTANT: discrimination must stay positive (a negative-slope 3PL
-    curve isn't a real IRT model) and difficulty should stay within the
-    theta grid's range. An earlier version of this function used
-    unconstrained Nelder-Mead, which on noisy predicted curves (common
-    early in the EM loop, before ability estimates are any good) could
-    converge to a NEGATIVE discrimination -- silently clamped to a floor
-    value by the caller afterward, alongside an essentially arbitrary
-    difficulty. That destroyed the fit for a meaningful fraction of items
-    rather than avoiding it. Fixed here with `scipy.optimize.curve_fit`'s
-    built-in `bounds` support (a bounded Trust Region Reflective fit) --
-    a drop-in replacement that keeps both parameters in a sane region by
-    construction, with no post-hoc clipping needed.
+    Discrimination has to stay positive -- a negative-slope 3PL curve
+    isn't a real IRT model -- and difficulty needs to stay within the
+    theta grid's range. scipy.optimize.curve_fit is given explicit bounds
+    on both parameters so the fit stays in range by construction, which
+    matters on noisy predicted curves (common early in the EM loop,
+    before ability estimates are any good).
     """
     def model(theta, discrimination, difficulty):
         return three_parameter_logistic(
@@ -144,8 +192,8 @@ def _fit_irt_curve_to_predictions(predicted_probabilities: np.ndarray,
         )
         fitted_discrimination, fitted_difficulty = fitted_params
     except RuntimeError:
-        # curve_fit failed to converge (rare) -- fall back to a coarse grid
-        # search over the same bounded region rather than propagating junk.
+        # curve_fit didn't converge (rare) -- fall back to a coarse grid
+        # search over the same bounded region instead of returning junk.
         a_candidates = np.linspace(lower_bounds[0], upper_bounds[0], 20)
         d_candidates = np.linspace(lower_bounds[1], upper_bounds[1], 20)
         best_a, best_d, best_sse = a_candidates[0], d_candidates[0], np.inf
@@ -164,43 +212,33 @@ def _fit_irt_curve_to_predictions(predicted_probabilities: np.ndarray,
 def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
                                      current_ability_estimates: np.ndarray,
                                      theta_grid: np.ndarray = DEFAULT_THETA_GRID,
-                                     random_seed: int = 0) -> tuple:
-    """
-    This is the "M-step": given our current best guess at each
-    test-taker's ability, fit the ML ensemble and translate it back into
-    IRT item parameters for EVERY item (including items with no training
-    responses at all -- this is what makes "cold-start" calibration
-    possible).
+                                     random_seed: int = 0,
+                                     backend: str = "ensemble",
+                                     autogluon_time_limit: int = 60) -> tuple:
+    """The M-step: given our current guess at each test-taker's ability,
+    fit the ML model and translate it back into IRT parameters for every
+    item -- including items with zero training responses, which is what
+    makes cold-start calibration possible (the model generalizes from item
+    features, not item IDs).
 
-    Parameters
-    ----------
-    responses : dict
-        Output of `simulate_test_responses(...)` (or a subset of it).
-    items : dict
-        Output of `simulate_items(...)` -- provides the raw item features.
-    n_items : int
-        Total number of items in the full item bank (including any items
-        with zero responses in `responses`).
-    current_ability_estimates : np.ndarray
-        Current best guess of each session's theta, indexed by session_id.
-    theta_grid : np.ndarray
-        Grid of theta values used for the curve-fitting step.
-    random_seed : int
-        Random seed for the underlying ML models.
+    responses: output of simulate_test_responses (or a subset).
+    items: output of simulate_items -- the raw item features.
+    n_items: total items in the bank, including any with zero responses.
+    current_ability_estimates: current theta guess per session, indexed
+        by session_id.
+    theta_grid: grid used for the curve-fitting step.
+    random_seed: seed for the underlying ML models.
+    backend: "ensemble" (default, RF+XGB+LGBM, no extra install) or
+        "autogluon" (the paper's actual tool -- needs autogluon.tabular
+        installed separately; see AutoGluonGradeModel).
 
-    Returns
-    -------
-    (fitted_discrimination, fitted_difficulty, trained_model,
-     training_loss_nonparametric, training_loss_parametric) : tuple
-        Arrays of length n_items with the newly estimated IRT parameters
-        for every item, the trained ML ensemble itself, and two training-set
-        loss numbers (mean negative log-likelihood) used to check EM
-        convergence: the raw ML ensemble's loss, and the loss after
-        projecting it onto the interpretable 3PL curve. Comparing these
-        across EM steps is the same diagnostic the paper uses (Figure 6)
-        to justify its choice of 4 EM steps.
+    Returns (fitted_discrimination, fitted_difficulty, trained_model,
+    training_loss_nonparametric, training_loss_parametric) -- item
+    parameter arrays, the trained model, and two training-loss numbers
+    (raw ML predictions vs. the 3PL fit derived from them) used to check
+    EM convergence, the same diagnostic the paper uses in Figure 6.
     """
-    # Build the training data: for every observed response, look up that
+    # Build the training table: for every observed response, look up that
     # session's current ability estimate and that item's raw features.
     session_thetas = current_ability_estimates[responses["session_id"]]
     item_feature_1 = items["feature_1"][responses["item_id"]]
@@ -209,12 +247,10 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
     training_features = np.column_stack([session_thetas, item_feature_1, item_feature_2])
     training_grades = responses["grade"]
 
-    model = GradeEnsembleModel(random_seed=random_seed).fit(training_features, training_grades)
+    model = _make_grade_model(backend, random_seed, autogluon_time_limit).fit(training_features, training_grades)
 
-    # For EVERY item (even ones never seen in training), ask the model
-    # "what is the predicted probability-correct at each theta on the grid?"
-    # This is what lets AutoIRT calibrate brand-new ("cold-start") items:
-    # the model generalizes from item FEATURES, not from item IDs.
+    # Ask the model for a predicted probability-correct at every theta on
+    # the grid, for every item (even ones never seen in training).
     fitted_discrimination = np.zeros(n_items)
     fitted_difficulty = np.zeros(n_items)
 
@@ -226,8 +262,6 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
         ])
         predicted_probs_at_this_theta = model.predict_probability_correct(query_features)
 
-        # We accumulate a (n_items x n_grid) table across the loop; simplest
-        # to build it up column by column here.
         if theta_index == 0:
             predicted_probability_grid = np.zeros((n_items, len(theta_grid)))
         predicted_probability_grid[:, theta_index] = predicted_probs_at_this_theta
@@ -239,16 +273,13 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
         fitted_discrimination[item_index] = a_fit
         fitted_difficulty[item_index] = d_fit
 
-    # Discrimination should always be positive and reasonably sized;
-    # clip away any numerical fitting artifacts.
+    # Belt-and-suspenders clip in case of any numerical fitting artifacts.
     fitted_discrimination = np.clip(fitted_discrimination, 0.05, 10.0)
 
-    # --- Training-loss diagnostic (mirrors the paper's Figure 6) ---
-    # The paper justifies stopping at 4 EM steps by tracking training loss
-    # (nonparametric ML predictions vs. the parametric 3PL fit derived from
-    # them) and observing it plateau. We compute the same two numbers here
-    # on the TRAINING data, so `run_autoirt_calibration` can report a real
-    # convergence trend instead of just trusting the paper's step count.
+    # Training-loss diagnostic (mirrors the paper's Figure 6): compare the
+    # raw ML ensemble's training loss against the loss after projecting it
+    # onto the 3PL curve, so the EM loop can check convergence directly
+    # instead of trusting a fixed step count.
     nonparametric_predictions = model.predict_probability_correct(training_features)
     parametric_predictions = three_parameter_logistic(
         theta=session_thetas,
@@ -274,13 +305,9 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
 def _compute_session_log_posterior(item_ids_in_session, grades_in_session,
                                     fitted_discrimination, fitted_difficulty,
                                     theta_grid, fixed_chance=0.25, log_prior=None):
-    """
-    Internal helper: computes the (unnormalized) log-posterior probability
-    of each theta value on the grid, for ONE test-taking session, given
-    the grades they received and the current item parameter estimates.
-
-    This uses Bayes' rule: posterior ∝ likelihood x prior.
-    """
+    """Unnormalized log-posterior over the theta grid for one session,
+    given their grades and the current item parameters (posterior ∝
+    likelihood x prior)."""
     a = fitted_discrimination[item_ids_in_session][:, None]
     d = fitted_difficulty[item_ids_in_session][:, None]
     probability_correct = three_parameter_logistic(
@@ -308,18 +335,11 @@ def resample_abilities(responses: dict, fitted_discrimination: np.ndarray,
                         theta_grid: np.ndarray = DEFAULT_THETA_GRID,
                         ability_prior_std: float = np.sqrt(2.5),
                         random_seed: int = 0) -> tuple:
-    """
-    This is the "E-step": given the current item parameters, draw a new
-    random sample of each session's ability from its posterior
-    distribution. This randomness is what makes the algorithm "Monte
-    Carlo" EM rather than plain EM.
+    """The E-step: given the current item parameters, draw a fresh random
+    sample of each session's ability from its posterior. The randomness
+    here is the "Monte Carlo" part of Monte Carlo EM.
 
-    Returns
-    -------
-    (session_ids, resampled_theta) : tuple of np.ndarray
-        The session ids present in `responses`, and a freshly sampled
-        theta value for each one.
-    """
+    Returns (session_ids, resampled_theta)."""
     rng = np.random.default_rng(random_seed)
     log_prior = -0.5 * (theta_grid / ability_prior_std) ** 2
 
@@ -355,16 +375,12 @@ def compute_posterior_mean_abilities(responses: dict, fitted_discrimination: np.
                                       fitted_difficulty: np.ndarray, fixed_chance: float = 0.25,
                                       theta_grid: np.ndarray = DEFAULT_THETA_GRID,
                                       ability_prior_std: float = np.sqrt(2.5)) -> tuple:
-    """
-    Computes the posterior MEAN ability for each session (as opposed to a
-    random sample). This is what you would report as the student's final
-    SCORE (see equation 5 in the paper), since a mean is a more stable
-    point estimate than a single random draw.
+    """Posterior MEAN ability per session (as opposed to a random sample)
+    -- this is what gets reported as a test-taker's score (paper's
+    equation 5), since a mean is a more stable point estimate than one
+    random draw.
 
-    Returns
-    -------
-    (session_ids, posterior_mean_theta) : tuple of np.ndarray
-    """
+    Returns (session_ids, posterior_mean_theta)."""
     log_prior = -0.5 * (theta_grid / ability_prior_std) ** 2
 
     sort_order = np.argsort(responses["session_id"])
@@ -400,113 +416,63 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
                              convergence_tolerance: float = 0.005,
                              max_em_steps: int = 20,
                              convergence_window: int = 6,
-                             min_hits_in_window: int = 3) -> dict:
-    """
-    Runs the full AutoIRT calibration loop (Algorithm 1 in the paper):
-    alternates between the M-step (fit ML model, derive IRT parameters)
-    and the E-step (resample abilities).
+                             min_hits_in_window: int = 3,
+                             backend: str = "ensemble",
+                             autogluon_time_limit: int = 60) -> dict:
+    """Runs the full AutoIRT calibration loop (Algorithm 1 in the paper):
+    alternates M-step (fit ML model, derive IRT parameters) and E-step
+    (resample abilities) until the training loss looks converged.
 
-    Parameters
-    ----------
-    responses : dict
-        The training data (see `simulate_test_responses`).
-    items : dict
-        The item bank (see `simulate_items`). Note this can include items
-        with ZERO responses in `responses` -- those are "cold-start"
-        items, and AutoIRT will still produce parameter estimates for
-        them using only their raw features.
-    n_items : int
-        Total number of items in the bank (including cold-start items).
-    n_em_steps : int
-        MINIMUM number of EM steps to run before checking for convergence
-        (see "termination rule" below). Default 4, matching the paper's
-        own choice, but now used as a floor rather than a hard stop.
-    random_seed : int
-        Random seed, for reproducibility.
-    convergence_tolerance : float
-        Once past `n_em_steps`, a step "counts" as small if the relative
-        change in training loss from the previous step is below this
-        tolerance. Default 0.005 (0.5% relative change).
-    convergence_window : int
-        How many of the most recent steps to look at when checking for
-        convergence. Default 6.
-    min_hits_in_window : int
-        Stop once at least this many of the last `convergence_window`
-        steps were "small" (see `convergence_tolerance`). Default 3 (i.e.
-        3 of the last 6 steps), which tolerates noisy individual steps
-        without resetting all the progress made in prior steps.
+    responses: training data (simulate_test_responses).
+    items: item bank (simulate_items) -- can include items with zero
+        responses in `responses`; those are the cold-start items, and
+        AutoIRT still produces estimates for them from features alone.
+    n_items: total items in the bank, including cold-start items.
+    n_em_steps: minimum EM steps to run before checking convergence.
+        Default 4, matching the paper's own number, but used here as a
+        floor rather than a hard stop -- see the note below on why.
+    random_seed: seed for reproducibility.
+    convergence_tolerance: a step counts as "small" once the relative
+        change in training loss from the previous step drops below this.
+        Default 0.005 (0.5%).
+    convergence_window / min_hits_in_window: convergence is declared once
+        at least min_hits_in_window of the last convergence_window steps
+        were "small" -- defaults 3 of the last 6. Requiring a majority
+        rather than an exact run of consecutive small steps makes this
+        more tolerant of one noisy step in the middle of an otherwise
+        flat trajectory.
+    max_em_steps: hard cap in case the loss never settles. Default 20.
+    backend: "ensemble" (default) or "autogluon" -- see AutoGluonGradeModel
+        above. Used to test how much of any remaining gap vs. the paper is
+        the calibration procedure vs. the specific AutoML tool.
 
-        Tuning note: a smaller window (e.g. 4) or a looser tolerance
-        converges faster, but testing against real DET-phase runs showed
-        this creates false positives -- conditions with a noisy early dip
-        (e.g. ViC Jump 20 in one run) got flagged "converged" as early as
-        step 4-5, while their loss kept dropping substantially for another
-        10+ steps afterward. Widening the window instead of loosening the
-        tolerance avoided that false-positive risk in that same test, at
-        the cost of needing a few more steps on fast-converging runs.
-    max_em_steps : int
-        Hard cap so the loop can't run indefinitely if loss never settles
-        below `convergence_tolerance`. Default 20.
+    Returns a dict with "discrimination", "difficulty", "trained_model",
+    "training_loss_history" (per-step nonparametric/parametric loss),
+    "stopped_reason" ("converged" or "hit_max_em_steps"), and
+    "n_steps_run".
 
-    Returns
-    -------
-    dict with keys:
-        "discrimination"       : final fitted discrimination for every item
-        "difficulty"            : final fitted difficulty for every item
-        "trained_model"         : the final trained ML ensemble
-        "training_loss_history" : list of dicts, one per EM step actually
-                                   run, each with "step", "loss_nonparametric",
-                                   "loss_parametric"
-        "stopped_reason"        : "converged" or "hit_max_em_steps", so you
-                                   can tell which one happened
-        "n_steps_run"           : how many EM steps were actually run
-
-    A note on the termination rule
-    -------------------------------
-    Algorithm 1 in the paper (top of page 4) just says "for each EM
-    iteration do" -- it does not define a stopping rule. The paper's own
-    choice of 4 steps comes from a separate empirical observation in their
-    Results section (training loss was roughly constant within 4 steps
-    for THEIR simulation settings), combined with the fact that each
-    M-step requires an expensive AutoML fit. That is not a termination
-    rule that's guaranteed to transfer to a different scale or AutoML
-    backend, which is exactly why it's checked here instead of assumed.
-
-    The standard reference for an automated MCEM stopping rule is Booth,
-    J. G., & Hobert, J. P. (1999), "Maximizing generalized linear mixed
-    model likelihoods with an automated Monte Carlo EM algorithm," JRSS
-    Series B, 61(1), 265-285. Their rule builds a confidence interval for
-    the parameter update at each iteration, using the Monte Carlo error of
-    that update, and stops once the previous estimate falls inside that
-    interval (otherwise it increases the Monte Carlo sample size and
-    continues). That requires machinery this project doesn't have (a
-    standard error on each parameter estimate from repeated MC draws).
-
-    What's implemented here is a simplified stand-in that follows the
-    same spirit using what's already available: track the relative change
-    in training loss (`loss_parametric`) between consecutive EM steps, and
-    stop once that change has been small for MOST of the last few steps.
-    This is a genuine simplification of Booth & Hobert's idea, not a
-    re-implementation of it -- worth stating plainly rather than implying
-    it's the full automated rule.
-
-    Earlier version of this rule required 2 CONSECUTIVE small steps, which
-    turned out to be fragile on small/noisy datasets: a couple of DET-phase
-    conditions (Y/N Vocab Jump 20, ViC Jump 40) hit max_em_steps without
-    ever converging, even though their loss had mostly flattened out --
-    a single noisy step kept resetting the streak back to zero. The rule
-    now instead requires the relative change to be small in at least
-    `min_hits_in_window` of the last `convergence_window` steps, which
-    tolerates one bad step without throwing away all the progress before it.
+    On the termination rule: Algorithm 1 in the paper (top of p. 4) is
+    just "for each EM iteration do" -- no stopping condition. Their choice
+    of 4 steps comes from a separate empirical note in the Results section
+    (loss was roughly flat within 4 steps for their specific settings),
+    not a rule that's guaranteed to hold at a different scale or with a
+    different AutoML backend -- hence checking it here instead of copying
+    their number. The standard reference for an automated MCEM stopping
+    rule is Booth & Hobert (1999), "Maximizing generalized linear mixed
+    model likelihoods with an automated Monte Carlo EM algorithm," JRSS B,
+    61(1), 265-285: they build a confidence interval for each iteration's
+    parameter update from its Monte Carlo error, and stop once the update
+    is statistically indistinguishable from zero. Their version needs
+    machinery this project doesn't have (a standard error per parameter
+    from repeated MC draws), so what's here is a simplified version in
+    the same spirit, using the training loss that's already being tracked.
     """
     n_sessions = int(responses["session_id"].max()) + 1
-    # Start with a random draw from the ability prior (theta ~ N(0, sqrt(2.5)))
-    # for each session, rather than theta=0 for everyone. If every session
-    # starts at exactly the same value, the "theta" column has ZERO
-    # variance in the very first M-step's training data, so the ML
-    # ensemble has no way to learn a theta-dependence at all in that first
-    # round -- it can only fit on item features, and the projected IRT
-    # curves for that round come out nearly flat.
+    # Start from a random draw of the ability prior (theta ~ N(0, sqrt(2.5)))
+    # per session instead of theta=0 for everyone -- if every session starts
+    # at the same value, the "theta" column has zero variance in the first
+    # M-step's training data, so the model can't learn any theta-dependence
+    # at all in that first round.
     init_rng = np.random.default_rng(random_seed)
     ability_estimates = init_rng.normal(0.0, np.sqrt(2.5), size=n_sessions)
 
@@ -521,6 +487,7 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
         (fitted_discrimination, fitted_difficulty, trained_model,
          loss_nonparametric, loss_parametric) = calibrate_items_given_abilities(
             responses, items, n_items, ability_estimates, random_seed=random_seed + step,
+            backend=backend, autogluon_time_limit=autogluon_time_limit,
         )
         training_loss_history.append({
             "step": step + 1,
@@ -528,7 +495,7 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
             "loss_parametric": loss_parametric,
         })
 
-        # --- Convergence check ---
+        # Convergence check
         past_minimum_steps = (step + 1) >= n_em_steps
         if len(training_loss_history) >= 2:
             previous_loss = training_loss_history[-2]["loss_parametric"]

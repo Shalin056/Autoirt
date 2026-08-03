@@ -24,33 +24,42 @@ results/item_bank_sweep.png.
 import sys
 import os
 import csv
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
 
+import config
 from src.simulate import simulate_items, simulate_test_taker_abilities, simulate_test_responses
 from src.autoirt_model import run_autoirt_calibration, GradeEnsembleModel, DEFAULT_THETA_GRID, _fit_irt_curve_to_predictions
 from src.evaluate import evaluate_calibration
 
 # --- Sweep settings ---
-# The paper sweeps item bank size at 100, 400, 1600. We keep those exact
-# values (so the SHAPE of the result is comparable to Figure 4) but use a
-# smaller, fixed session count than the paper's 10,000-160,000 range, to
-# keep total runtime reasonable. Increase N_SESSIONS if you have time.
-ITEM_BANK_SIZES = [100, 400, 1600]
-N_SESSIONS = 3000
+# Single-item-bank-size diagnostic run: fits only the 1600-item case at a
+# raised AUTOGLUON_TIME_LIMIT, to check how much AutoGluon's per-fit time
+# budget affects cold-start quality at larger item-bank sizes (item id is
+# passed to AutoGluon as a feature, so more items means more categories
+# to fit in the same time budget). Writes to a separate CSV
+# (item_bank_sweep_timelimit_test.csv) so it doesn't overwrite the
+# results already in item_bank_sweep.csv from the main sweep.
+ITEM_BANK_SIZES = [1600]
+N_SESSIONS = 10000
 ITEMS_PER_SESSION = 8
 N_HOLDOUT_ITEMS = 50
 N_EM_STEPS = 4
 RANDOM_SEED = 42
+AUTOGLUON_TIME_LIMIT = 150  # was 60 -- this is the thing being tested
+OUTPUT_CSV_NAME = "item_bank_sweep_timelimit_test.csv"
 
 
-def run_cold_start_for_item_bank_size(n_items: int, seed: int) -> dict:
+
+def run_cold_start_for_item_bank_size(n_items: int, seed: int, autogluon_time_limit: int = AUTOGLUON_TIME_LIMIT) -> dict:
     """Simulate an item bank of size n_items + a disjoint N_HOLDOUT_ITEMS
     cold-start holdout set, calibrate on the training items only, then
     score the holdout items' calibration quality using ONLY their raw
-    features (zero training responses for those items -- true cold-start)."""
+    features (zero training responses for those items -- true cold-start).
+    autogluon_time_limit only matters when config.BACKEND == "autogluon"."""
     rng_items = np.random.default_rng(seed)
 
     total_items = n_items + N_HOLDOUT_ITEMS
@@ -77,6 +86,7 @@ def run_cold_start_for_item_bank_size(n_items: int, seed: int) -> dict:
     calibration_result = run_autoirt_calibration(
         responses, train_items, n_items=n_items,
         n_em_steps=N_EM_STEPS, random_seed=seed,
+        backend=config.BACKEND, autogluon_time_limit=autogluon_time_limit,  # autogluon -- was implicitly "ensemble" before
     )
 
     # Score the holdout items using the final ML model + their raw
@@ -118,42 +128,40 @@ def run_cold_start_for_item_bank_size(n_items: int, seed: int) -> dict:
 
 
 def main():
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "results", OUTPUT_CSV_NAME)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    if os.path.exists(csv_path):
+        os.remove(csv_path)  # start fresh; each row appended as it finishes
+
     results = []
     for n_items in ITEM_BANK_SIZES:
-        print(f"\n=== Item bank size: {n_items} (+{N_HOLDOUT_ITEMS} cold-start holdout) ===")
+        print(f"\n=== Item bank size: {n_items} (+{N_HOLDOUT_ITEMS} cold-start holdout, "
+              f"{N_SESSIONS} sessions, autogluon_time_limit={AUTOGLUON_TIME_LIMIT}s) ===")
+        start_time = time.time()
         metrics = run_cold_start_for_item_bank_size(n_items, RANDOM_SEED)
-        print(metrics)
-        results.append({"n_items": n_items, **metrics})
+        elapsed_seconds = time.time() - start_time
+        print(f"{metrics}  ({elapsed_seconds:.0f}s)")
+        row = {"n_items": n_items, "n_sessions": N_SESSIONS,
+               "autogluon_time_limit": AUTOGLUON_TIME_LIMIT,
+               "elapsed_seconds": round(elapsed_seconds, 1), **metrics}
+        results.append(row)
 
-    out_dir = os.path.join(os.path.dirname(__file__), "..", "results")
-    os.makedirs(out_dir, exist_ok=True)
+        file_exists_before_write = os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if not file_exists_before_write:
+                writer.writeheader()
+            writer.writerow(row)
 
-    csv_path = os.path.join(out_dir, "item_bank_sweep.csv")
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(results[0].keys()))
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"\nSaved sweep results to {csv_path}")
-
-    try:
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.plot(
-            [r["n_items"] for r in results],
-            [r["item_grade_pearson_r"] for r in results],
-            marker="o",
-        )
-        ax.set_xscale("log")
-        ax.set_xlabel("Number of items in training bank")
-        ax.set_ylabel("Cold-start item-grade Pearson r")
-        ax.set_title("Cold-start calibration quality vs. item bank size\n(paper's Figure 4 pattern)")
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        png_path = os.path.join(out_dir, "item_bank_sweep.png")
-        fig.savefig(png_path, dpi=150)
-        print(f"Saved plot to {png_path}")
-    except ImportError:
-        print("matplotlib not installed; skipping plot (CSV results are still saved).")
+    print(f"\nSaved results to {csv_path}")
+    print("Compare against results/item_bank_sweep.csv (same 1600-item point, time_limit=60):")
+    print("  time_limit=60  -> Pearson 0.653, ability_recovery 0.765")
+    print(f"  time_limit={AUTOGLUON_TIME_LIMIT} -> see row above")
+    out_dir = os.path.dirname(csv_path)
+    # No plot here on purpose -- this is a single-point diagnostic run
+    # (one item bank size, one time_limit value), not a sweep. Plotting
+    # it would overwrite results/item_bank_sweep.png from the real sweep
+    # with a meaningless one-point line.
 
 
 if __name__ == "__main__":

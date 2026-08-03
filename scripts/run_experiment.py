@@ -21,6 +21,12 @@ From the project's top-level folder, run:
 All the experiment settings (number of items, sessions, etc.) are in
 `config.py` at the top level -- edit that file if you want a bigger or
 smaller run.
+
+Calibration uses config.BACKEND (= "autogluon") by default; see
+run_backend_comparision.py for a script that compares this against the
+hand-built ensemble backend on identical data, and the comment above
+AutoGluonGradeModel.__init__ in src/autoirt_model.py for backend
+behavior notes.
 """
 
 import sys
@@ -97,6 +103,7 @@ def run_warm_start_experiment(items, true_abilities, all_responses):
     calibration_result = run_autoirt_calibration(
         train_responses, items, n_items=config.N_ITEMS,
         n_em_steps=config.N_EM_STEPS, random_seed=config.RANDOM_SEED,
+        backend=config.BACKEND,
     )
 
     metrics = evaluate_calibration(
@@ -123,6 +130,7 @@ def run_cold_start_experiment(items, true_abilities, all_responses):
     calibration_result = run_autoirt_calibration(
         train_responses, items, n_items=config.N_ITEMS,
         n_em_steps=config.N_EM_STEPS, random_seed=config.RANDOM_SEED + 10,
+        backend=config.BACKEND,
     )
 
     metrics = evaluate_calibration(

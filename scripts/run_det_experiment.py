@@ -27,11 +27,17 @@ Settings are in config.py. This is heavier than run_experiment.py:
 6 split conditions x 2 item types = 12 full calibration runs, each
 iterating to convergence instead of a fixed step count, so start small
 before scaling up the item/session counts.
+
+Item bank sizes (config.N_YN_VOCAB_ITEMS / config.N_VIC_ITEMS) and the
+AutoML backend (config.BACKEND) are set in config.py -- larger item
+banks and the AutoGluon backend both add substantially to runtime
+compared to a small ensemble-backend run.
 """
 
 import sys
 import os
 import csv
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -77,7 +83,17 @@ def split_jump_start(responses: dict, operational_item_ids: np.ndarray,
                       pilot_item_ids: np.ndarray, split_day: int, n_responses_per_pilot_item: int):
     """Same as cold-start, but training also gets the first R responses
     per pilot item after the split date (ordered by day, then response_seq
-    to break same-day ties). Test is whatever's left over post-split."""
+    to break same-day ties). Test is whatever's left over post-split.
+
+    Also checks whether pilot items actually had R responses available
+    post-split. If most items are data-starved (fewer than R responses
+    exist at all), the "Jump R" condition silently collapses into "use
+    whatever's available" rather than testing R specifically, which can
+    make different R values produce identical training sets and
+    therefore identical metrics. Printing this diagnostic surfaces that
+    immediately instead of it only showing up later as suspiciously
+    identical metrics.
+    """
     is_operational = np.isin(responses["item_id"], operational_item_ids)
     is_pre_split = responses["day"] < split_day
     is_post_split = ~is_pre_split
@@ -102,6 +118,21 @@ def split_jump_start(responses: dict, operational_item_ids: np.ndarray,
             seen_count_by_item[item_id] = count_so_far + 1
     keep_pilot_idx = np.array(keep_pilot_idx, dtype=int)
 
+    # Diagnostic: what fraction of pilot items actually reached R?
+    n_pilot_items = len(pilot_item_ids)
+    n_items_reaching_r = sum(1 for count in seen_count_by_item.values()
+                              if count >= n_responses_per_pilot_item)
+    n_items_with_any_data = len(seen_count_by_item)
+    fraction_reaching_r = n_items_reaching_r / n_pilot_items if n_pilot_items else 0.0
+    if fraction_reaching_r < 0.8:
+        print(f"    [DIAGNOSTIC] Jump {n_responses_per_pilot_item}: only "
+              f"{n_items_reaching_r}/{n_pilot_items} pilot items "
+              f"({fraction_reaching_r:.0%}) actually had {n_responses_per_pilot_item} "
+              f"post-split responses available ({n_items_with_any_data}/{n_pilot_items} "
+              f"had any data at all). This condition is likely data-starved -- "
+              f"increase N_DET_SESSIONS or treat this result as not meaningfully "
+              f"testing R={n_responses_per_pilot_item} before reporting it.")
+
     train_mask = operational_pre_mask.copy()
     train_mask[keep_pilot_idx] = True
 
@@ -117,9 +148,31 @@ def split_warm_start(responses: dict, split_day: int):
     return select_subset(responses, is_pre_split), select_subset(responses, ~is_pre_split)
 
 
+RESULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "results", "det_offline_analysis.csv")
+RESULT_FIELDNAMES = ["item_type", "split", "n_steps_run", "stopped_reason", "elapsed_seconds",
+                      "test_loss_nll", "item_grade_pearson_r", "item_grade_spearman_r",
+                      "ability_recovery_pearson_r"]
+
+
+def append_result_row(row: dict):
+    """Writes one condition's result immediately, instead of waiting for
+    everything to finish. This is the difference between losing 3 hours
+    of work if the run is killed/crashes at condition 11 of 12, and
+    already having 11 of 12 rows safely on disk. Also means you can
+    `tail -f` or just re-open the CSV mid-run to see live progress."""
+    os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
+    file_exists = os.path.exists(RESULTS_PATH)
+    with open(RESULTS_PATH, "a", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=RESULT_FIELDNAMES)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def run_one_item_type(item_type_name: str, n_items: int, chance_value: float,
                        items_per_session: int, n_sessions: int, random_seed: int) -> list:
-    """Runs all 6 split conditions for one item type and returns a list of result rows."""
+    """Runs all 6 split conditions for one item type, saving each result to
+    CSV as soon as it's ready, and returns the list of result rows."""
     print(f"\n{'#' * 70}")
     print(f"# ITEM TYPE: {item_type_name}  (n_items={n_items}, chance={chance_value})")
     print(f"{'#' * 70}")
@@ -149,30 +202,42 @@ def run_one_item_type(item_type_name: str, n_items: int, chance_value: float,
     conditions.append(("Warm 05-15", train, test))
 
     results = []
-    for split_name, train_responses, test_responses in conditions:
-        print(f"\n--- {item_type_name} / {split_name} "
+    max_em_steps = getattr(config, "DET_MAX_EM_STEPS", 20)
+    for condition_index, (split_name, train_responses, test_responses) in enumerate(conditions, start=1):
+        print(f"\n--- [{condition_index}/{len(conditions)}] {item_type_name} / {split_name} "
               f"(train n={len(train_responses['grade'])}, test n={len(test_responses['grade'])}) ---")
+        start_time = time.time()
         calibration_result = run_autoirt_calibration(
             train_responses, items, n_items=n_items, random_seed=random_seed,
+            backend=(config.DET_BACKEND_OVERRIDE or config.BACKEND),
+            max_em_steps=max_em_steps,
         )
+        elapsed_seconds = time.time() - start_time
         metrics = evaluate_calibration(
             test_responses, theta,
             calibration_result["discrimination"], calibration_result["difficulty"],
             n_items=n_items,
         )
-        print(f"{item_type_name} / {split_name} metrics:", metrics)
-        results.append({
+        print(f"{item_type_name} / {split_name} metrics ({elapsed_seconds:.0f}s):", metrics)
+        row = {
             "item_type": item_type_name,
             "split": split_name,
             "n_steps_run": calibration_result["n_steps_run"],
             "stopped_reason": calibration_result["stopped_reason"],
+            "elapsed_seconds": round(elapsed_seconds, 1),
             **metrics,
-        })
+        }
+        append_result_row(row)
+        results.append(row)
 
     return results
 
 
 def main():
+    if os.path.exists(RESULTS_PATH):
+        os.remove(RESULTS_PATH)  # start this run's CSV fresh; each row gets appended as it finishes
+
+    run_start_time = time.time()
     all_results = []
     all_results += run_one_item_type(
         "Y/N Vocab", config.N_YN_VOCAB_ITEMS, config.YN_CHANCE,
@@ -182,25 +247,20 @@ def main():
         "ViC", config.N_VIC_ITEMS, config.VIC_CHANCE,
         config.VIC_ITEMS_PER_SESSION, config.N_DET_SESSIONS, config.DET_RANDOM_SEED + 100,
     )
+    total_elapsed_minutes = (time.time() - run_start_time) / 60
 
     print("\n" + "=" * 70)
     print("SUMMARY (compare to the paper's Table 1 / Table 2 pattern)")
     print("=" * 70)
-    header = f"{'Type':<10}{'Split':<12}{'Loss':>8}{'Pearson':>10}{'Spearman':>10}{'Steps':>8}"
+    header = f"{'Type':<10}{'Split':<12}{'Loss':>8}{'Pearson':>10}{'Spearman':>10}{'Steps':>8}{'Secs':>8}"
     print(header)
     for row in all_results:
         print(f"{row['item_type']:<10}{row['split']:<12}"
               f"{row['test_loss_nll']:>8.3f}{row['item_grade_pearson_r']:>10.3f}"
-              f"{row['item_grade_spearman_r']:>10.3f}{row['n_steps_run']:>8}")
+              f"{row['item_grade_spearman_r']:>10.3f}{row['n_steps_run']:>8}{row['elapsed_seconds']:>8.0f}")
 
-    results_path = os.path.join(os.path.dirname(__file__), "..", "results", "det_offline_analysis.csv")
-    os.makedirs(os.path.dirname(results_path), exist_ok=True)
-    fieldnames = list(all_results[0].keys())
-    with open(results_path, "w", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_results)
-    print(f"\nSaved results to: {results_path}")
+    print(f"\nTotal run time: {total_elapsed_minutes:.1f} minutes")
+    print(f"Results were saved incrementally to: {RESULTS_PATH}")
 
 
 if __name__ == "__main__":

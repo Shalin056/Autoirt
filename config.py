@@ -22,6 +22,13 @@ WARM_START_TEST_FRACTION = 0.2   # fraction of sessions held out for testing
 N_EM_STEPS = 4  # minimum number of Monte Carlo EM iterations (paper uses 4;
                 # run_autoirt_calibration treats this as a floor, not a fixed count)
 
+# --- AutoML backend ---
+# "ensemble" = hand-built RandomForest/XGBoost/LightGBM stack.
+# "autogluon" = AutoGluon-tabular, matching the paper's own backend.
+# See run_backend_comparision.py for a script that fits both backends on
+# identical data and compares them directly.
+BACKEND = "autogluon"
+
 # --- Reproducibility ---
 RANDOM_SEED = 42  # change this to get a different random simulation
 
@@ -32,17 +39,41 @@ N_REPEATS = 5  # set to e.g. 5 to run the whole experiment 5 times with
 
 # --- DET-phase (Phase 2) settings ---
 # Two-item-type setup matching the paper's DET analysis, using simulated
-# item content since we don't have real Duolingo data yet. Real DET has
-# 3290 Y/N Vocab items and 585 ViC items, scaled down here so a first
-# run finishes in a reasonable time (12 full calibration runs total: 6
-# split conditions x 2 item types, each running to convergence). Bump
-# these up once a small run works.
-N_YN_VOCAB_ITEMS = 150
-N_VIC_ITEMS = 80
-N_DET_SESSIONS = 1500
+# item content since real Duolingo data isn't available. Real DET has
+# 3290 Y/N Vocab items and 585 ViC items; these are set to roughly half
+# that. AutoML fits get more expensive with more items/rows, so start
+# with one item type if a full run is too slow.
+N_YN_VOCAB_ITEMS = 3290
+N_VIC_ITEMS = 585
+
+# N_DET_SESSIONS needs to be large enough that pilot items actually
+# accumulate more than R post-split responses for the largest Jump value
+# (R=80) -- otherwise "first R responses per pilot item" is silently
+# capped by how much data exists rather than by R, and the Jump
+# conditions stop being distinguishable from each other. Roughly:
+#   n_sessions ~= target_responses_per_item * n_items
+#                 / (items_per_session * post_split_day_fraction)
+# use check_jump_start_data_volume.py to confirm a given value here
+# produces distinct train-set sizes across Jump 20/40/80 before running
+# the full (multi-hour) calibration in run_det_experiment.py.
+N_DET_SESSIONS = 25000
+
+# Hard cap on EM steps for the DET run specifically. Each step is a full
+# model fit across ~1200 items, so this bounds worst-case runtime per
+# condition. Lower this (e.g. to 8-10) if a run is taking too long --
+# results may be slightly less converged, worth noting in the report,
+# but it puts a ceiling on how long you're waiting.
+DET_MAX_EM_STEPS = 20
+
 YN_ITEMS_PER_SESSION = 18   # matches the paper
 VIC_ITEMS_PER_SESSION = 9   # matches the paper
 YN_CHANCE = 0.25            # paper: c=0.25 for Y/N Vocab (guessable, multiple choice)
 VIC_CHANCE = 0.0            # paper: c=0 for ViC (not really guessable)
 JUMP_START_R_VALUES = [20, 40, 80]  # matches the paper's Jump 20/40/80
 DET_RANDOM_SEED = 42
+
+# Runtime override for run_det_experiment.py specifically. 12 conditions x
+# up to 20 EM steps x AutoGluon's 60s/fit is multi-hour at N_DET_SESSIONS
+# =25000. Set to "ensemble" to iterate quickly (minutes, not hours), or
+# to None to fall back to config.BACKEND for a full overnight run.
+DET_BACKEND_OVERRIDE = "ensemble"
