@@ -32,6 +32,14 @@ COLD_JUMP_SPLIT_DAY = 51   # 2024-05-22
 WARM_SPLIT_DAY_1 = 37      # 2024-05-08
 WARM_SPLIT_DAY_2 = 44      # 2024-05-15
 
+# Same grid and prior std as autoirt_model.DEFAULT_THETA_GRID /
+# ability_prior_std -- kept as a local copy rather than importing
+# autoirt_model here, since that module pulls in sklearn/xgboost/
+# lightgbm/autogluon just for one constant, which this purely-data-
+# generation module shouldn't need to depend on.
+ADAPTIVE_SELECTION_THETA_GRID = np.linspace(-8, 8, 161)
+ABILITY_PRIOR_STD = np.sqrt(2.5)
+
 
 def simulate_det_items(n_items: int, chance_value: float,
                         effect_noise_std: float = 0.1, random_seed: int = None) -> dict:
@@ -111,6 +119,176 @@ def simulate_det_responses(items: dict, theta_by_session: np.ndarray, session_da
         day_list.extend([session_day[session]] * items_per_session)
         response_seq_list.extend(range(response_seq_counter, response_seq_counter + items_per_session))
         response_seq_counter += items_per_session
+
+    return {
+        "session_id": np.array(session_id_list),
+        "item_id": np.array(item_id_list),
+        "grade": np.array(grade_list),
+        "day": np.array(day_list),
+        "response_seq": np.array(response_seq_list),
+        "true_theta": theta_by_session[np.array(session_id_list)],
+    }
+
+
+def _fisher_information_3pl(theta, discrimination, chance, difficulty):
+    """Fisher information for the 3PL model, equation (2) of the
+    BanditCAT paper (Sharpnack et al. 2024). `theta` and the item
+    parameter arrays are broadcast against each other, so this can score
+    many (theta, item) pairs in one call -- used here as
+    theta[:, None] x item_params[None, :] to get an (n_theta_draws,
+    n_eligible_items) matrix in one shot."""
+    p2 = 1 / (1 + np.exp(-discrimination * (theta - difficulty)))
+    p = chance + (1 - chance) * p2
+    numerator = (discrimination * (1 - chance) * p2 * (1 - p2)) ** 2
+    denominator = np.where(p * (1 - p) < 1e-12, 1e-12, p * (1 - p))
+    return numerator / denominator
+
+
+def simulate_det_responses_adaptive(items: dict, theta_by_session: np.ndarray, session_day: np.ndarray,
+                                     items_per_session: int, exposure_gamma: float = 0.5,
+                                     n_theta_draws: int = 5, random_injection_rate: float = 0.0,
+                                     random_seed: int = None) -> dict:
+    """BanditCAT V1 item selection (Sharpnack et al. 2024, Section 3.3)
+    in place of simulate_det_responses' uniform-random draw, so the
+    resulting response data has the same item-difficulty-tracks-ability
+    selection bias the real DET has (see the AutoIRT paper's "Offline
+    evaluation suffers..." paragraph) instead of assuming random
+    administration.
+
+    At each of the items_per_session rounds within a session:
+      1. Draw n_theta_draws samples of theta from the session's current
+         posterior (a discretized grid over DEFAULT_THETA_GRID, updated
+         after every response within the session).
+      2. For every item not yet administered this session, compute the
+         3PL Fisher information (eq. 2) at each drawn theta, using a
+         randomized discrimination -- Gamma(a_i / exposure_gamma,
+         exposure_gamma), mean a_i -- so exposure isn't dominated by a
+         handful of the most informative items (the paper's exposure
+         control, eq. 7/8). Average over the theta draws.
+
+         SIMPLIFICATION vs. the paper: for the 3PL case (Y/N Vocab,
+         chance != 0) the paper randomizes the *height* of a
+         Gaussian-kernel approximation to the Fisher information curve,
+         obtained from (a, c, d) by moment matching -- the exact
+         moment-matching formula isn't given in enough detail in the
+         paper text available to reproduce here. This instead randomizes
+         the discrimination parameter directly inside the exact 3PL
+         Fisher information formula, which gives the same qualitative
+         exposure-control effect (more randomization -> more even
+         exposure) but is not the literal BanditCAT V1 formula for
+         chance != 0 items. For ViC (chance = 0, i.e. genuinely 2PL),
+         this matches the paper's method (eq. 7) exactly.
+      3. Administer the item with the highest average randomized Fisher
+         information.
+      4. Observe the grade (scored against the item's TRUE parameters,
+         not the randomized ones used only for selection) and do a
+         Bayesian update of the posterior over the theta grid.
+
+    random_injection_rate: with this probability at each round, skip the
+    Fisher-information selection entirely and pick uniformly at random
+    among items not yet administered this session instead. This is the
+    standard real-world fix for the restricted-range/coverage problem
+    documented in check_adaptive_selection.py -- periodically forcing a
+    random (non-adaptive) item back into rotation restores both item
+    coverage and per-item ability range, at the cost of diluting how
+    strongly administration tracks ability. 0.0 (default) reproduces the
+    original pure-adaptive behavior exactly.
+
+    Item parameters used for selection are the TRUE simulated values,
+    not a live-refit AutoIRT model -- refitting the full calibration
+    model after every single response isn't something the real system
+    does either (operational items are calibrated from history, then
+    used as-is for administration between recalibration passes), so this
+    treats the item bank as if its parameters were already known, which
+    is the standard simplification for a simulation study like this one.
+
+    Returns the same dict-of-arrays shape as simulate_det_responses, so
+    everything downstream (the cold/jump/warm-start splitting logic,
+    evaluate_calibration, etc.) works unchanged.
+
+    IMPORTANT INTERPRETIVE CAVEAT: the AutoIRT paper itself warns that
+    non-random administration inflates the item-grade correlation metric
+    even when item parameters are constant across items ("Evaluating
+    Calibrated Item Parameters" section: "the item mean grade correlation
+    is typically positive even when the item parameters are constant for
+    all items"), because the estimated ability used to compute predicted
+    grades is itself derived from the same non-randomly-selected
+    responses. So a higher item_grade_pearson_r after switching to this
+    function is not on its own evidence of better calibration -- some or
+    all of an improvement could be this known metric-inflation effect
+    rather than a real gain, and that should be checked (e.g. by also
+    looking at test_loss_nll, which isn't subject to the same bias in
+    the same way) before reporting a change here as a calibration
+    improvement.
+    """
+    rng = np.random.default_rng(random_seed)
+    n_items = len(items["discrimination"])
+    n_sessions = len(theta_by_session)
+
+    discrimination = items["discrimination"]
+    difficulty = items["difficulty"]
+    chance = items["chance"]
+
+    theta_grid = ADAPTIVE_SELECTION_THETA_GRID
+    log_prior = -0.5 * (theta_grid / ABILITY_PRIOR_STD) ** 2
+
+    session_id_list = []
+    item_id_list = []
+    grade_list = []
+    day_list = []
+    response_seq_list = []
+    response_seq_counter = 0
+
+    for session in range(n_sessions):
+        eligible = np.ones(n_items, dtype=bool)
+        log_posterior = log_prior.copy()
+
+        for _round in range(items_per_session):
+            posterior = np.exp(log_posterior - log_posterior.max())
+            posterior /= posterior.sum()
+            theta_draws = rng.choice(theta_grid, size=n_theta_draws, p=posterior)
+
+            eligible_ids = np.where(eligible)[0]
+
+            if random_injection_rate > 0 and rng.random() < random_injection_rate:
+                chosen_item = int(rng.choice(eligible_ids))
+            else:
+                randomized_discrimination = rng.gamma(
+                    shape=discrimination[eligible_ids] / exposure_gamma, scale=exposure_gamma,
+                )
+                info = _fisher_information_3pl(
+                    theta_draws[:, None],
+                    randomized_discrimination[None, :],
+                    chance[eligible_ids][None, :],
+                    difficulty[eligible_ids][None, :],
+                ).mean(axis=0)
+                chosen_item = int(eligible_ids[info.argmax()])
+
+            eligible[chosen_item] = False
+
+            true_probability = three_parameter_logistic(
+                theta=theta_by_session[session], discrimination=discrimination[chosen_item],
+                chance=chance[chosen_item], difficulty=difficulty[chosen_item],
+            )
+            grade = int(rng.binomial(n=1, p=true_probability))
+
+            # Posterior update uses the item's TRUE parameters (scoring
+            # should reflect the real item, not the randomized one used
+            # only to control exposure during selection).
+            p_grid = three_parameter_logistic(
+                theta=theta_grid, discrimination=discrimination[chosen_item],
+                chance=chance[chosen_item], difficulty=difficulty[chosen_item],
+            )
+            p_grid = np.clip(p_grid, 1e-6, 1 - 1e-6)
+            log_likelihood = grade * np.log(p_grid) + (1 - grade) * np.log(1 - p_grid)
+            log_posterior = log_posterior + log_likelihood
+
+            session_id_list.append(session)
+            item_id_list.append(chosen_item)
+            grade_list.append(grade)
+            day_list.append(session_day[session])
+            response_seq_list.append(response_seq_counter)
+            response_seq_counter += 1
 
     return {
         "session_id": np.array(session_id_list),

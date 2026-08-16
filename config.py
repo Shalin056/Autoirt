@@ -56,7 +56,22 @@ N_VIC_ITEMS = 585
 # use check_jump_start_data_volume.py to confirm a given value here
 # produces distinct train-set sizes across Jump 20/40/80 before running
 # the full (multi-hour) calibration in run_det_experiment.py.
+# This value is for DET_ITEM_SELECTION="random" specifically -- every
+# random-mode result checked and reported so far was generated at 25000.
 N_DET_SESSIONS = 25000
+
+# Separate session count for DET_ITEM_SELECTION="adaptive". Exposure is
+# non-uniform under adaptive selection, so the random-mode N_DET_SESSIONS
+# above doesn't carry over -- check_jump_start_data_volume.py found 25000
+# still left Y/N Vocab Jump 40 and Jump 80 (and ViC Jump 80) data-starved
+# even with DET_ADAPTIVE_RANDOM_INJECTION_RATE=0.4, and 50000 clears
+# everything except Y/N Vocab Jump 80 (13% -> 42% coverage, real
+# improvement but still below the 80% threshold). Not chasing this
+# further with even more sessions -- Y/N Vocab Jump 80 was the one
+# condition that stayed borderline under random selection too, and the
+# same approach applies here: report it with the coverage caveat attached
+# rather than spending more compute to fully clear one sub-condition.
+N_DET_SESSIONS_ADAPTIVE = 50000
 
 # Hard cap on EM steps for the DET run specifically. Each step is a full
 # model fit across ~1200 items, so this bounds worst-case runtime per
@@ -77,3 +92,27 @@ DET_RANDOM_SEED = 42
 # =25000. Set to "ensemble" to iterate quickly (minutes, not hours), or
 # to None to fall back to config.BACKEND for a full overnight run.
 DET_BACKEND_OVERRIDE = "ensemble"
+
+# How items are chosen for each session in the DET-phase simulation.
+# "random" = simulate_det_responses' uniform random draw (the default
+#   used for every DET run so far).
+# "adaptive" = simulate_det_responses_adaptive's BanditCAT V1-style
+#   selection (item difficulty tracks the session's current ability
+#   estimate, preference for high discrimination, randomized for
+#   exposure control) -- see simulate_det.py for the exact mechanism
+#   and an important caveat about how this affects the item-grade
+#   correlation metric.
+DET_ITEM_SELECTION = "random"
+
+# Only used when DET_ITEM_SELECTION="adaptive". check_adaptive_selection.py
+# found pure adaptive selection (0.0 here) leaves a large share of the item
+# bank under-covered and narrows the ability range each item is seen across
+# (62%/1.07 for Y/N Vocab, 82%/1.16 for ViC vs. random's ~100%/1.5+), which
+# is a real, literature-grounded reason item calibration can get WORSE under
+# adaptive administration, not better. This fraction of rounds fall back to
+# picking uniformly at random among not-yet-administered items instead of
+# the Fisher-information selection, to recover coverage/range at the cost of
+# diluting how strongly administration tracks ability -- run
+# check_adaptive_selection.py's coverage sweep to pick a value before
+# committing to a full run.
+DET_ADAPTIVE_RANDOM_INJECTION_RATE = 0.2

@@ -45,7 +45,7 @@ import numpy as np
 
 import config
 from src.simulate_det import simulate_det_items, simulate_det_sessions, simulate_det_responses, \
-    COLD_JUMP_SPLIT_DAY, WARM_SPLIT_DAY_1, WARM_SPLIT_DAY_2
+    simulate_det_responses_adaptive, COLD_JUMP_SPLIT_DAY, WARM_SPLIT_DAY_1, WARM_SPLIT_DAY_2
 from src.autoirt_model import run_autoirt_calibration
 from src.evaluate import evaluate_calibration
 
@@ -148,7 +148,19 @@ def split_warm_start(responses: dict, split_day: int):
     return select_subset(responses, is_pre_split), select_subset(responses, ~is_pre_split)
 
 
-RESULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "results", "det_offline_analysis.csv")
+def _results_path_for_selection_mode() -> str:
+    """Separate output file per item-selection mode, so switching
+    DET_ITEM_SELECTION to "adaptive" doesn't overwrite the "random"-mode
+    det_offline_analysis.csv that every result checked so far (Week 3
+    report, both replication runs) was generated from and verified
+    against."""
+    item_selection = getattr(config, "DET_ITEM_SELECTION", "random")
+    suffix = "" if item_selection == "random" else f"_{item_selection}"
+    return os.path.join(os.path.dirname(__file__), "..", "results",
+                         f"det_offline_analysis{suffix}.csv")
+
+
+RESULTS_PATH = _results_path_for_selection_mode()
 RESULT_FIELDNAMES = ["item_type", "split", "n_steps_run", "stopped_reason", "elapsed_seconds",
                       "test_loss_nll", "item_grade_pearson_r", "item_grade_spearman_r",
                       "ability_recovery_pearson_r"]
@@ -181,9 +193,18 @@ def run_one_item_type(item_type_name: str, n_items: int, chance_value: float,
     sessions = simulate_det_sessions(n_sessions=n_sessions, random_seed=random_seed + 1)
     theta_key = "yn_theta" if item_type_name == "Y/N Vocab" else "vic_theta"
     theta = sessions[theta_key]
-    all_responses = simulate_det_responses(
-        items, theta, sessions["session_day"], items_per_session, random_seed=random_seed + 2,
-    )
+
+    item_selection = getattr(config, "DET_ITEM_SELECTION", "random")
+    if item_selection == "adaptive":
+        injection_rate = getattr(config, "DET_ADAPTIVE_RANDOM_INJECTION_RATE", 0.0)
+        all_responses = simulate_det_responses_adaptive(
+            items, theta, sessions["session_day"], items_per_session,
+            random_injection_rate=injection_rate, random_seed=random_seed + 2,
+        )
+    else:
+        all_responses = simulate_det_responses(
+            items, theta, sessions["session_day"], items_per_session, random_seed=random_seed + 2,
+        )
 
     pilot_item_ids, operational_item_ids = choose_pilot_and_operational_items(
         n_items, random_seed=random_seed + 3,
@@ -237,15 +258,22 @@ def main():
     if os.path.exists(RESULTS_PATH):
         os.remove(RESULTS_PATH)  # start this run's CSV fresh; each row gets appended as it finishes
 
+    # Adaptive selection needs a different (larger) session count than
+    # random selection to clear the same Jump-start data-volume bar --
+    # see config.py's N_DET_SESSIONS vs N_DET_SESSIONS_ADAPTIVE comments.
+    item_selection = getattr(config, "DET_ITEM_SELECTION", "random")
+    n_sessions = (config.N_DET_SESSIONS_ADAPTIVE if item_selection == "adaptive"
+                  else config.N_DET_SESSIONS)
+
     run_start_time = time.time()
     all_results = []
     all_results += run_one_item_type(
         "Y/N Vocab", config.N_YN_VOCAB_ITEMS, config.YN_CHANCE,
-        config.YN_ITEMS_PER_SESSION, config.N_DET_SESSIONS, config.DET_RANDOM_SEED,
+        config.YN_ITEMS_PER_SESSION, n_sessions, config.DET_RANDOM_SEED,
     )
     all_results += run_one_item_type(
         "ViC", config.N_VIC_ITEMS, config.VIC_CHANCE,
-        config.VIC_ITEMS_PER_SESSION, config.N_DET_SESSIONS, config.DET_RANDOM_SEED + 100,
+        config.VIC_ITEMS_PER_SESSION, n_sessions, config.DET_RANDOM_SEED + 100,
     )
     total_elapsed_minutes = (time.time() - run_start_time) / 60
 
