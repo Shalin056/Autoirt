@@ -418,7 +418,8 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
                              convergence_window: int = 6,
                              min_hits_in_window: int = 3,
                              backend: str = "ensemble",
-                             autogluon_time_limit: int = 60) -> dict:
+                             autogluon_time_limit: int = 60,
+                             step_callback=None) -> dict:
     """Runs the full AutoIRT calibration loop (Algorithm 1 in the paper):
     alternates M-step (fit ML model, derive IRT parameters) and E-step
     (resample abilities) until the training loss looks converged.
@@ -445,6 +446,16 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
     backend: "ensemble" (default) or "autogluon" -- see AutoGluonGradeModel
         above. Used to test how much of any remaining gap vs. the paper is
         the calibration procedure vs. the specific AutoML tool.
+    step_callback: optional function called after EVERY EM step (including
+        ones that don't end up being the last one) as
+        step_callback(step, discrimination, difficulty, loss_nonparametric,
+        loss_parametric), where step is 1-indexed and discrimination/
+        difficulty are that step's fitted item parameters (same arrays
+        the function would return if it stopped here). Lets a caller
+        track something step-by-step -- e.g. held-out metrics on a test
+        set -- without needing to re-run the whole calibration once per
+        step count. Does nothing if left as None (default); existing
+        callers are unaffected.
 
     Returns a dict with "discrimination", "difficulty", "trained_model",
     "training_loss_history" (per-step nonparametric/parametric loss),
@@ -516,6 +527,10 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
               f"{' (of max ' + str(max_em_steps) + ')' if not has_converged else ''}. "
               f"(train loss: nonparametric={loss_nonparametric:.4f}, "
               f"parametric={loss_parametric:.4f}, rel. change={rel_change_str})")
+
+        if step_callback is not None:
+            step_callback(step + 1, fitted_discrimination, fitted_difficulty,
+                          loss_nonparametric, loss_parametric)
 
         if not is_last_step:
             session_ids, new_thetas = resample_abilities(

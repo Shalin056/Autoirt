@@ -160,6 +160,34 @@ def _results_path_for_selection_mode() -> str:
                          f"det_offline_analysis{suffix}.csv")
 
 
+def _log_path_for_selection_mode() -> str:
+    """Same mode-aware naming as RESULTS_PATH -- see comment above."""
+    item_selection = getattr(config, "DET_ITEM_SELECTION", "random")
+    suffix = "" if item_selection == "random" else f"_{item_selection}"
+    return os.path.join(os.path.dirname(__file__), "..", "results",
+                         f"run_det_experiment_log{suffix}.txt")
+
+
+class _Tee:
+    """Duplicates every print() call to both the real console and a log
+    file, so the full console output (including the [DIAGNOSTIC] lines
+    and the per-condition metrics dicts) is always saved to disk without
+    needing to copy/paste from the terminal -- just hand over the log
+    file after a run finishes (or after killing it partway through, since
+    each write is flushed immediately)."""
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
 RESULTS_PATH = _results_path_for_selection_mode()
 RESULT_FIELDNAMES = ["item_type", "split", "n_steps_run", "stopped_reason", "elapsed_seconds",
                       "test_loss_nll", "item_grade_pearson_r", "item_grade_spearman_r",
@@ -255,6 +283,25 @@ def run_one_item_type(item_type_name: str, n_items: int, chance_value: float,
 
 
 def main():
+    log_path = _log_path_for_selection_mode()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    original_stdout = sys.stdout
+    log_file = open(log_path, "w")
+    sys.stdout = _Tee(original_stdout, log_file)
+    print(f"(Full console output is also being saved to: {log_path})")
+
+    try:
+        _run_main()
+    finally:
+        # Always restore stdout and close the file, even if the run is
+        # interrupted (Ctrl+C) or crashes partway through -- whatever
+        # printed before that point is still saved and readable.
+        sys.stdout = original_stdout
+        log_file.close()
+        print(f"Full console output saved to: {log_path}")
+
+
+def _run_main():
     if os.path.exists(RESULTS_PATH):
         os.remove(RESULTS_PATH)  # start this run's CSV fresh; each row gets appended as it finishes
 

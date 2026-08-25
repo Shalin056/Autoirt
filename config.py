@@ -71,7 +71,25 @@ N_DET_SESSIONS = 25000
 # condition that stayed borderline under random selection too, and the
 # same approach applies here: report it with the coverage caveat attached
 # rather than spending more compute to fully clear one sub-condition.
-N_DET_SESSIONS_ADAPTIVE = 50000
+#
+# IMPORTANT CAVEAT ADDED after the full-scale adaptive run: 50000 was
+# tuned only against jump-start's R=80 depth requirement. It was never
+# checked against whole-item-bank coverage, and it turns out to matter a
+# lot more than expected -- the sessions-per-item ratio at 50000/3290
+# (15.2) is actually LOWER than the small-scale correctness check's
+# 6000/150 (40.0), despite 50000 being a much bigger absolute number.
+# Y/N Vocab Warm-start (no pilot items, no R-depth requirement at all --
+# just needs good coverage across the whole operational bank) degraded
+# far more at full scale (-0.26 Pearson vs random) than the small-scale
+# check predicted (-0.06), which is consistent with this ratio mechanism
+# hitting the WHOLE bank, not just jump-start's pilot items specifically.
+# 131600 (= 40 * 3290, matching the small-scale ratio) is the next value
+# worth testing before treating 50000 as final.
+N_DET_SESSIONS_ADAPTIVE = 131600  # = 40 * 3290, matching the small-scale check's
+                                    # sessions-per-item ratio -- see comment above.
+                                    # Was 50000; testing whether matching the ratio
+                                    # (not just a bigger absolute number) closes the
+                                    # unexpectedly large Warm-start gap found at 50000.
 
 # Hard cap on EM steps for the DET run specifically. Each step is a full
 # model fit across ~1200 items, so this bounds worst-case runtime per
@@ -95,13 +113,16 @@ DET_BACKEND_OVERRIDE = "ensemble"
 
 # How items are chosen for each session in the DET-phase simulation.
 # "random" = simulate_det_responses' uniform random draw (the default
-#   used for every DET run so far).
+#   used for every DET run so far, and the agreed default going forward
+#   per Dr. Zheng's Aug 19 reply -- adaptive selection underperforms for
+#   calibration and item calibration / adaptive administration are being
+#   kept as separate problems for now).
 # "adaptive" = simulate_det_responses_adaptive's BanditCAT V1-style
 #   selection (item difficulty tracks the session's current ability
 #   estimate, preference for high discrimination, randomized for
-#   exposure control) -- see simulate_det.py for the exact mechanism
-#   and an important caveat about how this affects the item-grade
-#   correlation metric.
+#   exposure control) -- see simulate_det.py for the exact mechanism.
+#   Kept working and in place, not deleted, since this will be reused
+#   when the project moves on to the BanditCAT administration phase.
 DET_ITEM_SELECTION = "random"
 
 # Only used when DET_ITEM_SELECTION="adaptive". check_adaptive_selection.py
@@ -115,4 +136,4 @@ DET_ITEM_SELECTION = "random"
 # diluting how strongly administration tracks ability -- run
 # check_adaptive_selection.py's coverage sweep to pick a value before
 # committing to a full run.
-DET_ADAPTIVE_RANDOM_INJECTION_RATE = 0.2
+DET_ADAPTIVE_RANDOM_INJECTION_RATE = 0.4

@@ -22,6 +22,8 @@ day offsets below matching the paper's actual dates so the splits
 land in the same relative spot.
 """
 
+import time
+
 import numpy as np
 
 from .simulate import three_parameter_logistic, simulate_test_taker_abilities
@@ -239,7 +241,23 @@ def simulate_det_responses_adaptive(items: dict, theta_by_session: np.ndarray, s
     response_seq_list = []
     response_seq_counter = 0
 
+    # This loop has no vectorized shortcut (each round's item choice depends
+    # on the posterior update from the previous round), so at real DET scale
+    # it can run silently for several minutes with no output at all before
+    # the caller sees anything -- print periodic progress so a long run
+    # doesn't look identical to a frozen one.
+    progress_interval = max(1, n_sessions // 20)  # ~20 progress lines total
+    start_time = time.time()
+
     for session in range(n_sessions):
+        if session > 0 and session % progress_interval == 0:
+            elapsed = time.time() - start_time
+            fraction_done = session / n_sessions
+            estimated_remaining = elapsed / fraction_done - elapsed
+            print(f"    [simulate_det_responses_adaptive] {session}/{n_sessions} sessions "
+                  f"({fraction_done:.0%}), {elapsed:.0f}s elapsed, "
+                  f"~{estimated_remaining:.0f}s remaining", flush=True)
+
         eligible = np.ones(n_items, dtype=bool)
         log_posterior = log_prior.copy()
 

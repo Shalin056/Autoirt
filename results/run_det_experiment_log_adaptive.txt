@@ -1,0 +1,204 @@
+(Full console output is also being saved to: C:\Users\shali\Documents\shalin\US_DOCUMENTS\ASU\OPT\autoirt_project\scripts\..\results\run_det_experiment_log_adaptive.txt)
+
+######################################################################
+# ITEM TYPE: Y/N Vocab  (n_items=3290, chance=0.25)
+######################################################################
+    [simulate_det_responses_adaptive] 6580/131600 sessions (5%), 42s elapsed, ~796s remaining
+    [simulate_det_responses_adaptive] 13160/131600 sessions (10%), 83s elapsed, ~743s remaining
+    [simulate_det_responses_adaptive] 19740/131600 sessions (15%), 125s elapsed, ~710s remaining
+    [simulate_det_responses_adaptive] 26320/131600 sessions (20%), 168s elapsed, ~671s remaining
+    [simulate_det_responses_adaptive] 32900/131600 sessions (25%), 210s elapsed, ~631s remaining
+    [simulate_det_responses_adaptive] 39480/131600 sessions (30%), 258s elapsed, ~601s remaining
+    [simulate_det_responses_adaptive] 46060/131600 sessions (35%), 302s elapsed, ~561s remaining
+    [simulate_det_responses_adaptive] 52640/131600 sessions (40%), 349s elapsed, ~523s remaining
+    [simulate_det_responses_adaptive] 59220/131600 sessions (45%), 391s elapsed, ~478s remaining
+    [simulate_det_responses_adaptive] 65800/131600 sessions (50%), 435s elapsed, ~435s remaining
+    [simulate_det_responses_adaptive] 72380/131600 sessions (55%), 478s elapsed, ~391s remaining
+    [simulate_det_responses_adaptive] 78960/131600 sessions (60%), 521s elapsed, ~347s remaining
+    [simulate_det_responses_adaptive] 85540/131600 sessions (65%), 566s elapsed, ~305s remaining
+    [simulate_det_responses_adaptive] 92120/131600 sessions (70%), 609s elapsed, ~261s remaining
+    [simulate_det_responses_adaptive] 98700/131600 sessions (75%), 655s elapsed, ~218s remaining
+    [simulate_det_responses_adaptive] 105280/131600 sessions (80%), 698s elapsed, ~175s remaining
+    [simulate_det_responses_adaptive] 111860/131600 sessions (85%), 743s elapsed, ~131s remaining
+    [simulate_det_responses_adaptive] 118440/131600 sessions (90%), 791s elapsed, ~88s remaining
+    [simulate_det_responses_adaptive] 125020/131600 sessions (95%), 834s elapsed, ~44s remaining
+
+--- [1/6] Y/N Vocab / Cold (train n=780955, test n=839790) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6439, parametric=0.6465, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6434, parametric=0.6454, rel. change=0.0016)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6412, parametric=0.6424, rel. change=0.0046)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6377, parametric=0.6389, rel. change=0.0055)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6335, parametric=0.6348, rel. change=0.0065)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6307, parametric=0.6327, rel. change=0.0033)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6297, parametric=0.6312, rel. change=0.0023)
+Y/N Vocab / Cold metrics (905s): {'test_loss_nll': 0.6176100729139483, 'item_grade_pearson_r': np.float64(0.573924567507824), 'item_grade_spearman_r': np.float64(0.34928135967373986), 'ability_recovery_pearson_r': 0.8751548467213551}
+
+--- [2/6] Y/N Vocab / Jump 20 (train n=813855, test n=806890) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6437, parametric=0.6463, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6433, parametric=0.6448, rel. change=0.0023)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6386, parametric=0.6400, rel. change=0.0075)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6368, parametric=0.6384, rel. change=0.0024)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6357, parametric=0.6373, rel. change=0.0018)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6343, parametric=0.6356, rel. change=0.0026)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6303, parametric=0.6314, rel. change=0.0065)
+Y/N Vocab / Jump 20 metrics (1128s): {'test_loss_nll': 0.617102336550079, 'item_grade_pearson_r': np.float64(0.6749319135519117), 'item_grade_spearman_r': np.float64(0.43561070889302234), 'ability_recovery_pearson_r': 0.8692405431322814}
+
+--- [3/6] Y/N Vocab / Jump 40 (train n=846755, test n=773990) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6436, parametric=0.6461, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6434, parametric=0.6448, rel. change=0.0020)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6412, parametric=0.6423, rel. change=0.0039)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6361, parametric=0.6370, rel. change=0.0083)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6307, parametric=0.6323, rel. change=0.0074)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6282, parametric=0.6296, rel. change=0.0043)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6255, parametric=0.6266, rel. change=0.0047)
+Y/N Vocab / Jump 40 metrics (1006s): {'test_loss_nll': 0.6100278330041989, 'item_grade_pearson_r': np.float64(0.6653901688389536), 'item_grade_spearman_r': np.float64(0.4346697251972331), 'ability_recovery_pearson_r': 0.8628774910733209}
+
+--- [4/6] Y/N Vocab / Jump 80 (train n=912554, test n=708191) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6429, parametric=0.6454, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6435, parametric=0.6452, rel. change=0.0004)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6406, parametric=0.6442, rel. change=0.0015)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6418, parametric=0.6431, rel. change=0.0016)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6409, parametric=0.6422, rel. change=0.0014)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6400, parametric=0.6414, rel. change=0.0014)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6355, parametric=0.6367, rel. change=0.0073)
+Y/N Vocab / Jump 80 metrics (1104s): {'test_loss_nll': 0.62502765413849, 'item_grade_pearson_r': np.float64(0.7055503174805254), 'item_grade_spearman_r': np.float64(0.5283793189686318), 'ability_recovery_pearson_r': 0.8448011812936066}
+
+--- [5/6] Y/N Vocab / Warm 05-08 (train n=1105182, test n=1263618) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6434, parametric=0.6459, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6428, parametric=0.6439, rel. change=0.0031)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6373, parametric=0.6384, rel. change=0.0085)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6286, parametric=0.6302, rel. change=0.0130)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6199, parametric=0.6210, rel. change=0.0146)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6111, parametric=0.6128, rel. change=0.0131)
+  [AutoIRT] Completed EM step 7 (of max 20). (train loss: nonparametric=0.6078, parametric=0.6092, rel. change=0.0060)
+  [AutoIRT] Completed EM step 8 (of max 20). (train loss: nonparametric=0.6056, parametric=0.6075, rel. change=0.0028)
+  [AutoIRT] Completed EM step 9 (of max 20). (train loss: nonparametric=0.6053, parametric=0.6068, rel. change=0.0012)
+  [AutoIRT] Completed EM step 10. (train loss: nonparametric=0.6046, parametric=0.6060, rel. change=0.0013)
+Y/N Vocab / Warm 05-08 metrics (1700s): {'test_loss_nll': 0.592038861302921, 'item_grade_pearson_r': np.float64(0.6179059838206569), 'item_grade_spearman_r': np.float64(0.39110565329664804), 'ability_recovery_pearson_r': 0.8809957848848506}
+
+--- [6/6] Y/N Vocab / Warm 05-15 (train n=1315962, test n=1052838) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6430, parametric=0.6454, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6421, parametric=0.6433, rel. change=0.0033)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6389, parametric=0.6398, rel. change=0.0054)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6304, parametric=0.6314, rel. change=0.0131)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6204, parametric=0.6220, rel. change=0.0150)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6129, parametric=0.6143, rel. change=0.0124)
+  [AutoIRT] Completed EM step 7 (of max 20). (train loss: nonparametric=0.6087, parametric=0.6106, rel. change=0.0060)
+  [AutoIRT] Completed EM step 8 (of max 20). (train loss: nonparametric=0.6071, parametric=0.6086, rel. change=0.0032)
+  [AutoIRT] Completed EM step 9 (of max 20). (train loss: nonparametric=0.6057, parametric=0.6071, rel. change=0.0025)
+  [AutoIRT] Completed EM step 10. (train loss: nonparametric=0.6053, parametric=0.6062, rel. change=0.0015)
+Y/N Vocab / Warm 05-15 metrics (1705s): {'test_loss_nll': 0.5917453144545131, 'item_grade_pearson_r': np.float64(0.6002567741550802), 'item_grade_spearman_r': np.float64(0.3644405250710431), 'ability_recovery_pearson_r': 0.8809755892667382}
+
+######################################################################
+# ITEM TYPE: ViC  (n_items=585, chance=0.0)
+######################################################################
+    [simulate_det_responses_adaptive] 6580/131600 sessions (5%), 11s elapsed, ~211s remaining
+    [simulate_det_responses_adaptive] 13160/131600 sessions (10%), 22s elapsed, ~195s remaining
+    [simulate_det_responses_adaptive] 19740/131600 sessions (15%), 32s elapsed, ~183s remaining
+    [simulate_det_responses_adaptive] 26320/131600 sessions (20%), 44s elapsed, ~177s remaining
+    [simulate_det_responses_adaptive] 32900/131600 sessions (25%), 57s elapsed, ~171s remaining
+    [simulate_det_responses_adaptive] 39480/131600 sessions (30%), 71s elapsed, ~166s remaining
+    [simulate_det_responses_adaptive] 46060/131600 sessions (35%), 84s elapsed, ~156s remaining
+    [simulate_det_responses_adaptive] 52640/131600 sessions (40%), 96s elapsed, ~144s remaining
+    [simulate_det_responses_adaptive] 59220/131600 sessions (45%), 109s elapsed, ~133s remaining
+    [simulate_det_responses_adaptive] 65800/131600 sessions (50%), 121s elapsed, ~121s remaining
+    [simulate_det_responses_adaptive] 72380/131600 sessions (55%), 132s elapsed, ~108s remaining
+    [simulate_det_responses_adaptive] 78960/131600 sessions (60%), 143s elapsed, ~96s remaining
+    [simulate_det_responses_adaptive] 85540/131600 sessions (65%), 154s elapsed, ~83s remaining
+    [simulate_det_responses_adaptive] 92120/131600 sessions (70%), 165s elapsed, ~71s remaining
+    [simulate_det_responses_adaptive] 98700/131600 sessions (75%), 175s elapsed, ~58s remaining
+    [simulate_det_responses_adaptive] 105280/131600 sessions (80%), 186s elapsed, ~46s remaining
+    [simulate_det_responses_adaptive] 111860/131600 sessions (85%), 197s elapsed, ~35s remaining
+    [simulate_det_responses_adaptive] 118440/131600 sessions (90%), 207s elapsed, ~23s remaining
+    [simulate_det_responses_adaptive] 125020/131600 sessions (95%), 218s elapsed, ~11s remaining
+
+--- [1/6] ViC / Cold (train n=397498, test n=420705) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6536, parametric=0.6583, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6524, parametric=0.6554, rel. change=0.0045)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6515, parametric=0.6540, rel. change=0.0020)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6494, parametric=0.6524, rel. change=0.0025)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6468, parametric=0.6504, rel. change=0.0030)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6466, parametric=0.6492, rel. change=0.0019)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6400, parametric=0.6434, rel. change=0.0089)
+ViC / Cold metrics (378s): {'test_loss_nll': 0.6460331240155619, 'item_grade_pearson_r': np.float64(0.5888257251602032), 'item_grade_spearman_r': np.float64(0.33876910288546114), 'ability_recovery_pearson_r': 0.8616924246274332}
+
+--- [2/6] ViC / Jump 20 (train n=403338, test n=414865) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6543, parametric=0.6585, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6536, parametric=0.6553, rel. change=0.0049)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6516, parametric=0.6562, rel. change=0.0013)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6490, parametric=0.6522, rel. change=0.0061)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6478, parametric=0.6508, rel. change=0.0020)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6437, parametric=0.6467, rel. change=0.0063)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6383, parametric=0.6419, rel. change=0.0075)
+ViC / Jump 20 metrics (408s): {'test_loss_nll': 0.6341656441329254, 'item_grade_pearson_r': np.float64(0.7434471775952811), 'item_grade_spearman_r': np.float64(0.4300734781996372), 'ability_recovery_pearson_r': 0.8617481628786492}
+
+--- [3/6] ViC / Jump 40 (train n=409178, test n=409025) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6547, parametric=0.6587, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6535, parametric=0.6556, rel. change=0.0048)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6519, parametric=0.6545, rel. change=0.0016)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6480, parametric=0.6507, rel. change=0.0058)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6425, parametric=0.6463, rel. change=0.0067)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6402, parametric=0.6433, rel. change=0.0048)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6359, parametric=0.6389, rel. change=0.0067)
+ViC / Jump 40 metrics (401s): {'test_loss_nll': 0.6263293077137515, 'item_grade_pearson_r': np.float64(0.7706081425972969), 'item_grade_spearman_r': np.float64(0.4676781211498627), 'ability_recovery_pearson_r': 0.8614228928932561}
+
+--- [4/6] ViC / Jump 80 (train n=420858, test n=397345) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6551, parametric=0.6590, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6543, parametric=0.6582, rel. change=0.0013)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6517, parametric=0.6553, rel. change=0.0044)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6514, parametric=0.6538, rel. change=0.0022)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6483, parametric=0.6501, rel. change=0.0056)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6415, parametric=0.6447, rel. change=0.0084)
+  [AutoIRT] Completed EM step 7. (train loss: nonparametric=0.6354, parametric=0.6394, rel. change=0.0082)
+ViC / Jump 80 metrics (413s): {'test_loss_nll': 0.6266237954667152, 'item_grade_pearson_r': np.float64(0.8152154933051857), 'item_grade_spearman_r': np.float64(0.5081801735166128), 'ability_recovery_pearson_r': 0.8559649975108543}
+
+--- [5/6] ViC / Warm 05-08 (train n=555669, test n=628731) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6586, parametric=0.6612, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6570, parametric=0.6593, rel. change=0.0029)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6510, parametric=0.6543, rel. change=0.0076)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6445, parametric=0.6482, rel. change=0.0094)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6299, parametric=0.6343, rel. change=0.0214)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6187, parametric=0.6223, rel. change=0.0188)
+  [AutoIRT] Completed EM step 7 (of max 20). (train loss: nonparametric=0.6044, parametric=0.6095, rel. change=0.0207)
+  [AutoIRT] Completed EM step 8 (of max 20). (train loss: nonparametric=0.5974, parametric=0.6021, rel. change=0.0121)
+  [AutoIRT] Completed EM step 9 (of max 20). (train loss: nonparametric=0.5922, parametric=0.5967, rel. change=0.0089)
+  [AutoIRT] Completed EM step 10 (of max 20). (train loss: nonparametric=0.5904, parametric=0.5949, rel. change=0.0031)
+  [AutoIRT] Completed EM step 11 (of max 20). (train loss: nonparametric=0.5893, parametric=0.5936, rel. change=0.0021)
+  [AutoIRT] Completed EM step 12. (train loss: nonparametric=0.5871, parametric=0.5915, rel. change=0.0037)
+ViC / Warm 05-08 metrics (812s): {'test_loss_nll': 0.5655201998412497, 'item_grade_pearson_r': np.float64(0.8707906572578732), 'item_grade_spearman_r': np.float64(0.48688747531643645), 'ability_recovery_pearson_r': 0.860998734384188}
+
+--- [6/6] ViC / Warm 05-15 (train n=660339, test n=524061) ---
+  [AutoIRT] Completed EM step 1 (of max 20). (train loss: nonparametric=0.6587, parametric=0.6614, rel. change=n/a)
+  [AutoIRT] Completed EM step 2 (of max 20). (train loss: nonparametric=0.6578, parametric=0.6588, rel. change=0.0040)
+  [AutoIRT] Completed EM step 3 (of max 20). (train loss: nonparametric=0.6538, parametric=0.6568, rel. change=0.0031)
+  [AutoIRT] Completed EM step 4 (of max 20). (train loss: nonparametric=0.6485, parametric=0.6505, rel. change=0.0096)
+  [AutoIRT] Completed EM step 5 (of max 20). (train loss: nonparametric=0.6348, parametric=0.6392, rel. change=0.0174)
+  [AutoIRT] Completed EM step 6 (of max 20). (train loss: nonparametric=0.6245, parametric=0.6283, rel. change=0.0170)
+  [AutoIRT] Completed EM step 7 (of max 20). (train loss: nonparametric=0.6107, parametric=0.6151, rel. change=0.0210)
+  [AutoIRT] Completed EM step 8 (of max 20). (train loss: nonparametric=0.6007, parametric=0.6055, rel. change=0.0157)
+  [AutoIRT] Completed EM step 9 (of max 20). (train loss: nonparametric=0.5936, parametric=0.5975, rel. change=0.0132)
+  [AutoIRT] Completed EM step 10 (of max 20). (train loss: nonparametric=0.5901, parametric=0.5937, rel. change=0.0063)
+  [AutoIRT] Completed EM step 11 (of max 20). (train loss: nonparametric=0.5865, parametric=0.5912, rel. change=0.0043)
+  [AutoIRT] Completed EM step 12 (of max 20). (train loss: nonparametric=0.5870, parametric=0.5915, rel. change=0.0006)
+  [AutoIRT] Completed EM step 13. (train loss: nonparametric=0.5858, parametric=0.5897, rel. change=0.0031)
+ViC / Warm 05-15 metrics (882s): {'test_loss_nll': 0.5622903005353308, 'item_grade_pearson_r': np.float64(0.868748342838015), 'item_grade_spearman_r': np.float64(0.49466086726891945), 'ability_recovery_pearson_r': 0.8647014307088776}
+
+======================================================================
+SUMMARY (compare to the paper's Table 1 / Table 2 pattern)
+======================================================================
+Type      Split           Loss   Pearson  Spearman   Steps    Secs
+Y/N Vocab Cold           0.618     0.574     0.349       7     905
+Y/N Vocab Jump 20        0.617     0.675     0.436       7    1128
+Y/N Vocab Jump 40        0.610     0.665     0.435       7    1006
+Y/N Vocab Jump 80        0.625     0.706     0.528       7    1104
+Y/N Vocab Warm 05-08     0.592     0.618     0.391      10    1700
+Y/N Vocab Warm 05-15     0.592     0.600     0.364      10    1705
+ViC       Cold           0.646     0.589     0.339       7     378
+ViC       Jump 20        0.634     0.743     0.430       7     408
+ViC       Jump 40        0.626     0.771     0.468       7     402
+ViC       Jump 80        0.627     0.815     0.508       7     413
+ViC       Warm 05-08     0.566     0.871     0.487      12     812
+ViC       Warm 05-15     0.562     0.869     0.495      13     882
+
+Total run time: 200.9 minutes
+Results were saved incrementally to: C:\Users\shali\Documents\shalin\US_DOCUMENTS\ASU\OPT\autoirt_project\scripts\..\results\det_offline_analysis_adaptive.csv
