@@ -52,7 +52,8 @@ class GradeEnsembleModel:
     predicted probabilities. Same idea as AutoGluon's internal stacking,
     just fewer models and no automated search."""
 
-    def __init__(self, random_seed: int = 0):
+    def __init__(self, random_seed: int = 0, feature_columns: list = None):
+        self.feature_columns = feature_columns or FEATURE_COLUMNS
         self.models = [
             RandomForestClassifier(n_estimators=300, max_depth=8,
                                     random_state=random_seed, n_jobs=-1),
@@ -63,13 +64,13 @@ class GradeEnsembleModel:
         ]
 
     def fit(self, features: np.ndarray, grades: np.ndarray) -> "GradeEnsembleModel":
-        features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        features_df = pd.DataFrame(features, columns=self.feature_columns)
         for model in self.models:
             model.fit(features_df, grades)
         return self
 
     def predict_probability_correct(self, features: np.ndarray) -> np.ndarray:
-        features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        features_df = pd.DataFrame(features, columns=self.feature_columns)
         predictions = [model.predict_proba(features_df)[:, 1] for model in self.models]
         return np.mean(predictions, axis=0)
 
@@ -92,7 +93,8 @@ class AutoGluonGradeModel:
     failing on some unrelated import error deeper in.
     """
 
-    def __init__(self, random_seed: int = 0, time_limit: int = 60):
+    def __init__(self, random_seed: int = 0, time_limit: int = 60, feature_columns: list = None):
+        self.feature_columns = feature_columns or FEATURE_COLUMNS
         try:
             from autogluon.tabular import TabularPredictor
         except ImportError as e:
@@ -136,7 +138,7 @@ class AutoGluonGradeModel:
         )
 
     def fit(self, features: np.ndarray, grades: np.ndarray) -> "AutoGluonGradeModel":
-        train_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        train_df = pd.DataFrame(features, columns=self.feature_columns)
         train_df["grade"] = grades
         self.predictor = self._TabularPredictor(
             label="grade", problem_type="binary", eval_metric="log_loss", verbosity=0,
@@ -148,19 +150,24 @@ class AutoGluonGradeModel:
         return self
 
     def predict_probability_correct(self, features: np.ndarray) -> np.ndarray:
-        features_df = pd.DataFrame(features, columns=FEATURE_COLUMNS)
+        features_df = pd.DataFrame(features, columns=self.feature_columns)
         return self.predictor.predict_proba(features_df)[1].to_numpy()
 
 
-def _make_grade_model(backend: str, random_seed: int, autogluon_time_limit: int = 60):
+def _make_grade_model(backend: str, random_seed: int, autogluon_time_limit: int = 60,
+                       feature_columns: list = None):
     """Picks the ML backend by name -- "ensemble" (default, RF+XGB+LGBM,
     no extra install) or "autogluon" (paper's actual tool, needs
     autogluon.tabular installed separately). autogluon_time_limit only
-    applies to the "autogluon" backend."""
+    applies to the "autogluon" backend. feature_columns defaults to the
+    module's original ["theta", "feature_1", "feature_2"] if not given,
+    so every existing caller is unaffected; pass a different list to use
+    a different named feature set (e.g. the Y/N Vocab NLP features)."""
     if backend == "ensemble":
-        return GradeEnsembleModel(random_seed=random_seed)
+        return GradeEnsembleModel(random_seed=random_seed, feature_columns=feature_columns)
     elif backend == "autogluon":
-        return AutoGluonGradeModel(random_seed=random_seed, time_limit=autogluon_time_limit)
+        return AutoGluonGradeModel(random_seed=random_seed, time_limit=autogluon_time_limit,
+                                    feature_columns=feature_columns)
     raise ValueError(f"Unknown backend '{backend}': use 'ensemble' or 'autogluon'.")
 
 
@@ -214,7 +221,8 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
                                      theta_grid: np.ndarray = DEFAULT_THETA_GRID,
                                      random_seed: int = 0,
                                      backend: str = "ensemble",
-                                     autogluon_time_limit: int = 60) -> tuple:
+                                     autogluon_time_limit: int = 60,
+                                     item_feature_names: list = None) -> tuple:
     """The M-step: given our current guess at each test-taker's ability,
     fit the ML model and translate it back into IRT parameters for every
     item -- including items with zero training responses, which is what
@@ -231,6 +239,14 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
     backend: "ensemble" (default, RF+XGB+LGBM, no extra install) or
         "autogluon" (the paper's actual tool -- needs autogluon.tabular
         installed separately; see AutoGluonGradeModel).
+    item_feature_names: list of keys to look up in `items` as the raw
+        item-content features (e.g. ["feature_1", "feature_2"] for the
+        original synthetic simulation, or
+        ["is_real", "length", "zipf_frequency", "mean_bigram_log_freq",
+        "mean_trigram_log_freq"] for the Y/N Vocab NLP feature set).
+        Defaults to ["feature_1", "feature_2"] if not given, so every
+        existing caller behaves exactly as before -- this parameter only
+        needs to be passed by callers using a different item generator.
 
     Returns (fitted_discrimination, fitted_difficulty, trained_model,
     training_loss_nonparametric, training_loss_parametric) -- item
@@ -238,28 +254,30 @@ def calibrate_items_given_abilities(responses: dict, items: dict, n_items: int,
     (raw ML predictions vs. the 3PL fit derived from them) used to check
     EM convergence, the same diagnostic the paper uses in Figure 6.
     """
+    item_feature_names = item_feature_names or ["feature_1", "feature_2"]
+    feature_columns = ["theta"] + item_feature_names
+
     # Build the training table: for every observed response, look up that
     # session's current ability estimate and that item's raw features.
     session_thetas = current_ability_estimates[responses["session_id"]]
-    item_feature_1 = items["feature_1"][responses["item_id"]]
-    item_feature_2 = items["feature_2"][responses["item_id"]]
+    item_features_train = [items[name][responses["item_id"]] for name in item_feature_names]
 
-    training_features = np.column_stack([session_thetas, item_feature_1, item_feature_2])
+    training_features = np.column_stack([session_thetas] + item_features_train)
     training_grades = responses["grade"]
 
-    model = _make_grade_model(backend, random_seed, autogluon_time_limit).fit(training_features, training_grades)
+    model = _make_grade_model(backend, random_seed, autogluon_time_limit,
+                               feature_columns=feature_columns).fit(training_features, training_grades)
 
     # Ask the model for a predicted probability-correct at every theta on
     # the grid, for every item (even ones never seen in training).
     fitted_discrimination = np.zeros(n_items)
     fitted_difficulty = np.zeros(n_items)
+    item_features_query = [items[name] for name in item_feature_names]
 
     for theta_index, theta_value in enumerate(theta_grid):
-        query_features = np.column_stack([
-            np.full(n_items, theta_value),
-            items["feature_1"],
-            items["feature_2"],
-        ])
+        query_features = np.column_stack(
+            [np.full(n_items, theta_value)] + item_features_query
+        )
         predicted_probs_at_this_theta = model.predict_probability_correct(query_features)
 
         if theta_index == 0:
@@ -419,7 +437,8 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
                              min_hits_in_window: int = 3,
                              backend: str = "ensemble",
                              autogluon_time_limit: int = 60,
-                             step_callback=None) -> dict:
+                             step_callback=None,
+                             item_feature_names: list = None) -> dict:
     """Runs the full AutoIRT calibration loop (Algorithm 1 in the paper):
     alternates M-step (fit ML model, derive IRT parameters) and E-step
     (resample abilities) until the training loss looks converged.
@@ -446,6 +465,12 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
     backend: "ensemble" (default) or "autogluon" -- see AutoGluonGradeModel
         above. Used to test how much of any remaining gap vs. the paper is
         the calibration procedure vs. the specific AutoML tool.
+    item_feature_names: list of keys to look up in `items` as the raw
+        item-content features. Defaults to ["feature_1", "feature_2"] if
+        not given (every existing caller is unaffected); pass a
+        different list (e.g. the Y/N Vocab NLP feature names) to
+        calibrate on a different item generator's feature set. Passed
+        straight through to calibrate_items_given_abilities every step.
     step_callback: optional function called after EVERY EM step (including
         ones that don't end up being the last one) as
         step_callback(step, discrimination, difficulty, loss_nonparametric,
@@ -499,6 +524,7 @@ def run_autoirt_calibration(responses: dict, items: dict, n_items: int,
          loss_nonparametric, loss_parametric) = calibrate_items_given_abilities(
             responses, items, n_items, ability_estimates, random_seed=random_seed + step,
             backend=backend, autogluon_time_limit=autogluon_time_limit,
+            item_feature_names=item_feature_names,
         )
         training_loss_history.append({
             "step": step + 1,

@@ -2,34 +2,21 @@
 check_feature_richness_full_sweep.py
 ======================================
 
-Closes two open items from the feature-richness investigation:
+Extends check_feature_richness_sensitivity.py two ways: runs both item
+types (Y/N Vocab and ViC), and adds a third variant "richer" (=rich +
+cos(0.1*z^2)) to test why "rich" recovers difficulty well but
+discrimination poorly. True item-generation formulas:
 
-1. Y/N Vocab only, so far. This runs both item types.
+    true difficulty     = 4 * sin(z) / |z|
+    true discrimination = 0.5 * cos(0.1 * z^2) + 1.0
+    (z = feature_1 - feature_2)
 
-2. Every check so far showed "rich" recovering difficulty well
-   (0.88-0.98 Pearson across seeds) but discrimination much more weakly
-   (0.53-0.56). Re-checking the true item-generation formulas in
-   simulate_det.py explains why:
+"rich" gives sin(z) directly (matches difficulty's formula) but not
+cos(0.1*z^2) as one combined term (only z_squared and cos(z)
+separately). "richer" adds that exact term to test if discrimination
+recovery jumps the way difficulty's did with "rich".
 
-       true difficulty     = 4 * sin(z) / |z|
-       true discrimination = 0.5 * cos(0.1 * z^2) + 1.0
-       (z = feature_1 - feature_2)
-
-   "rich" gives the model sin(z) directly -- exactly what difficulty is
-   built from. It does NOT give cos(0.1*z^2) -- it gives z_squared and
-   cos(z) as separate, uncombined columns, which still leaves the model
-   to reconstruct that specific nonlinear composition itself, the same
-   class of hard problem "rich" was built to remove for difficulty. This
-   adds a third variant, "richer" (= rich + cos(0.1*z^2) explicitly), to
-   test that explanation directly: if discrimination recovery jumps the
-   way difficulty's did, the mechanism is confirmed.
-
-Single seed per item type (RANDOM_SEED, matching the original
-feature-richness check's first pass) -- not replicated yet. If the
-"richer" effect on discrimination looks as large and consistent as the
-original "rich" effect on difficulty did, that's the point to replicate
-it across seeds the same way check_feature_richness_sensitivity_replicated.py
-did for the original finding.
+Single seed (not replicated) -- replicate if the effect looks real.
 
 Run with:
     python scripts/check_feature_richness_full_sweep.py
@@ -52,6 +39,7 @@ VARIANTS = ("baseline", "rich", "richer")
 
 def main():
     all_results = {}
+
     for label, n_items, chance_value, items_per_session in ITEM_TYPES:
         print(f"\n{'=' * 70}")
         print(f"ITEM TYPE: {label}  (n_items={n_items}, chance={chance_value})")
@@ -76,17 +64,21 @@ def main():
 
     print("\nKey comparison for the discrimination hypothesis (richer vs. rich, same item type):")
     for label, results in all_results.items():
-        by_variant = {r["variant"]: r for r in results}
-        if "rich" in by_variant and "richer" in by_variant:
-            delta = (by_variant["richer"]["discrimination_pearson"]
-                     - by_variant["rich"]["discrimination_pearson"])
-            print(f"  {label}: discrimination Pearson rich={by_variant['rich']['discrimination_pearson']:.4f} "
-                  f"-> richer={by_variant['richer']['discrimination_pearson']:.4f}  (delta {delta:+.4f})")
+        # Look up each variant's result by name for this item type.
+        by_variant = {}
+        for r in results:
+            by_variant[r["variant"]] = r
 
-    print("\nA large positive delta here (comparable in size to rich's difficulty jump over")
-    print("baseline) confirms the missing-composite-term explanation for why discrimination")
-    print("recovery lagged difficulty recovery. A small delta means the explanation is wrong")
-    print("or incomplete, and the discrimination gap needs a different diagnosis.")
+        if "rich" in by_variant and "richer" in by_variant:
+            rich_discrimination = by_variant["rich"]["discrimination_pearson"]
+            richer_discrimination = by_variant["richer"]["discrimination_pearson"]
+            delta = richer_discrimination - rich_discrimination
+            print(f"  {label}: discrimination Pearson rich={rich_discrimination:.4f} "
+                  f"-> richer={richer_discrimination:.4f}  (delta {delta:+.4f})")
+
+    print("\nLarge positive delta -> confirms the missing-composite-term explanation.")
+    print("Small delta -> explanation is wrong/incomplete, discrimination gap needs")
+    print("a different diagnosis.")
 
 
 if __name__ == "__main__":

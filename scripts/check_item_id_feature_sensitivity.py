@@ -2,56 +2,28 @@
 check_item_id_feature_sensitivity.py
 ======================================
 
-Re-reading the AutoIRT paper's Method section closely: "The item ID is
-passed to the AutoML predictor as a feature, similar to the use of
-random effects terms." Checked our FEATURE_COLUMNS in autoirt_model.py:
+The AutoIRT paper's Method section says item ID is passed to the AutoML
+predictor as a feature (like a random effect). Our FEATURE_COLUMNS
+(theta, feature_1, feature_2) doesn't include it -- a real gap from the
+paper's stated method. This tests whether adding it as a one-hot column
+helps.
 
-    FEATURE_COLUMNS = ["theta", "feature_1", "feature_2"]
+Item ID can only help items the model saw during training, so this
+tests Warm-start recalibration specifically (operational items with
+real response history), not Cold-start (held-out items were never
+trained on, so their ID has nothing to look up).
 
-No item ID. This is a real, previously-unnoticed discrepancy from the
-paper's stated method, confirmed in BOTH papers (BanditCAT and AutoIRT
-describe the same mechanism).
+Same isolation strategy as check_feature_richness_sensitivity.py: TRUE
+theta for training (removes MCEM noise as a confound), fitted vs. TRUE
+item parameters compared directly (not the pipeline's usual
+item_grade_pearson_r).
 
-Unlike check_feature_richness_sensitivity.py, item ID can ONLY help
-items the model has already seen responses for during training -- a
-held-out pilot item's ID was never in the training data, so there is
-nothing to look up, and one-hot encoding an unseen category contributes
-nothing. That means this specifically tests the WARM-START mechanism
-(recalibrating OPERATIONAL items you already have real response history
-for), not Cold-start. Jump-start would see a partial, diluted version of
-this effect (mostly-operational training data plus a little new-item
-data); Cold-start is unaffected by design.
-
-Same isolation strategy as the feature-richness check, for the same
-reasons (removes MCEM ability-estimation noise as a confound):
-  - Uses TRUE theta for training, not an EM-estimated one.
-  - Compares FITTED item parameters against TRUE item parameters
-    directly (Pearson correlation on difficulty and discrimination),
-    evaluated on OPERATIONAL items this time (not held-out pilot items --
-    there would be nothing to measure for the item-ID variant otherwise).
-  - This is a single supervised-learning problem, not the full MCEM
-    loop, and the metric is intentionally different from the project's
-    standard item_grade_pearson_r for the same reasons documented in
-    check_feature_richness_sensitivity.py.
-
-item_id is one-hot encoded across the operational item set (the only
-IDs the model ever sees in training), rather than passed as a raw
-integer -- a raw integer column would let RandomForestClassifier split
-on arbitrary numeric thresholds of an ID, which is not what "similar to
-a random effect / per-item intercept" means and would not fairly test
-the paper's actual mechanism. One-hot is unambiguous across all three
-ensemble members (RF, XGBoost, LightGBM).
-
-Y/N Vocab only, same as the feature-richness check -- if this looks
-promising, ViC is the natural next check, same as there.
+One-hot encoded across operational item IDs (not a raw integer column,
+which would let the trees split on arbitrary numeric thresholds instead
+of treating each ID as its own category).
 
 Run with:
     python scripts/check_item_id_feature_sensitivity.py
-
-Takes a few minutes, similar to check_feature_richness_sensitivity.py
-(same model architecture, no AutoML search, no MCEM loop). One-hot
-encoding 75 operational items adds 75 columns -- noticeably more than
-the feature-richness check's 8, but still small for tree ensembles.
 """
 
 import sys
@@ -77,10 +49,8 @@ RANDOM_SEED = 42
 
 
 def choose_pilot_and_operational_items(n_items: int, random_seed: int):
-    """Same 50/50 split used throughout this project's DET-phase checks --
-    reimplemented locally rather than imported, same reasoning as
-    check_feature_richness_sensitivity.py (avoid pulling in
-    run_det_experiment.py's src.evaluate dependency for one small helper)."""
+    """Same 50/50 split used throughout the project, reimplemented
+    locally to avoid pulling in run_det_experiment.py's dependencies."""
     rng = np.random.default_rng(random_seed)
     n_pilot = n_items // 2
     pilot_item_ids = rng.choice(n_items, size=n_pilot, replace=False)
@@ -108,28 +78,37 @@ def fit_ensemble(models, feature_df: pd.DataFrame, grades: np.ndarray):
 
 
 def predict_ensemble(models, feature_df: pd.DataFrame) -> np.ndarray:
-    predictions = [model.predict_proba(feature_df)[:, 1] for model in models]
+    predictions = []
+    for model in models:
+        predictions.append(model.predict_proba(feature_df)[:, 1])
     return np.mean(predictions, axis=0)
 
 
 def build_features(feature_1, feature_2, theta, item_id, operational_ids: np.ndarray,
                     variant: str) -> pd.DataFrame:
-    """variant='baseline' -> exactly what the pipeline gives the model today
-    (theta, feature_1, feature_2). variant='with_item_id' -> baseline plus
-    one one-hot column per operational item ID, matching the paper's
-    described mechanism. `item_id` may be a scalar (broadcast) or an
-    array the same length as theta/feature_1/feature_2."""
+    """variant='baseline': theta, feature_1, feature_2 only (what the
+    pipeline uses today). variant='with_item_id': baseline + one
+    one-hot column per operational item ID. `item_id` can be a single
+    value (broadcast to every row) or an array matching theta's length."""
     base = pd.DataFrame({"theta": theta, "feature_1": feature_1, "feature_2": feature_2})
     if variant == "baseline":
         return base
 
     if variant == "with_item_id":
         n_rows = len(base)
-        item_id_arr = np.full(n_rows, item_id) if np.isscalar(item_id) else np.asarray(item_id)
-        one_hot = pd.DataFrame(
-            {f"item_{op_id}": (item_id_arr == op_id).astype(int) for op_id in operational_ids},
-            index=base.index,
-        )
+        if np.isscalar(item_id):
+            item_id_arr = np.full(n_rows, item_id)
+        else:
+            item_id_arr = np.asarray(item_id)
+
+        # One column per operational item ID: 1 where that row's item_id
+        # matches this column's ID, 0 otherwise.
+        one_hot_columns = {}
+        for op_id in operational_ids:
+            column_name = f"item_{op_id}"
+            one_hot_columns[column_name] = (item_id_arr == op_id).astype(int)
+        one_hot = pd.DataFrame(one_hot_columns, index=base.index)
+
         return pd.concat([base, one_hot], axis=1)
 
     raise ValueError(f"Unknown variant '{variant}'")
@@ -151,15 +130,18 @@ def run_variant(variant: str, items: dict, operational_ids: np.ndarray,
         operational_ids,
         variant,
     )
-    print(f"Training on {len(feature_df)} responses, {feature_df.shape[1]} feature columns"
-          f"{' (theta, feature_1, feature_2 + one-hot item id)' if variant == 'with_item_id' else ' (theta, feature_1, feature_2)'}")
+    if variant == "with_item_id":
+        feature_description = "theta, feature_1, feature_2 + one-hot item id"
+    else:
+        feature_description = "theta, feature_1, feature_2"
+    print(f"Training on {len(feature_df)} responses, {feature_df.shape[1]} feature columns "
+          f"({feature_description})")
 
     models = build_ensemble(random_seed)
     fit_ensemble(models, feature_df, train_grades)
 
-    # Recover parameters for OPERATIONAL items only -- this is the
-    # already-seen-item recalibration scenario item ID is meant to help
-    # with, unlike the feature-richness check's held-out pilot items.
+    # Fitted parameters for OPERATIONAL items only -- the already-seen-item
+    # recalibration scenario item ID is meant to help with.
     from src.autoirt_model import _fit_irt_curve_to_predictions, DEFAULT_THETA_GRID
 
     fitted_a = np.zeros(len(operational_ids))
@@ -202,13 +184,17 @@ def main():
 
     true_theta = simulate_test_taker_abilities(n_sessions=N_SESSIONS, random_seed=RANDOM_SEED + 1)
 
+    # One training row per (session, item) pair: each session answers
+    # ITEMS_PER_SESSION randomly chosen operational items.
     rng = np.random.default_rng(RANDOM_SEED + 2)
-    session_idx_list, item_idx_list = [], []
+    session_idx_list = []
+    item_idx_list = []
     for session in range(N_SESSIONS):
-        chosen = rng.choice(operational_ids, size=min(ITEMS_PER_SESSION, len(operational_ids)),
-                             replace=False)
-        session_idx_list.extend([session] * len(chosen))
-        item_idx_list.extend(chosen.tolist())
+        sample_size = min(ITEMS_PER_SESSION, len(operational_ids))
+        chosen_items = rng.choice(operational_ids, size=sample_size, replace=False)
+        for item_id in chosen_items:
+            session_idx_list.append(session)
+            item_idx_list.append(item_id)
     session_idx = np.array(session_idx_list)
     item_idx = np.array(item_idx_list)
 
@@ -220,8 +206,8 @@ def main():
     print(f"Simulated {len(grades)} training responses from operational items only, "
           f"using TRUE theta directly (no MCEM).")
 
-    # Responses per operational item, for context on how much each item's
-    # own recalibration has to work with.
+    # Responses per operational item -- context on how much data each
+    # item's own recalibration has to work with.
     _, counts = np.unique(item_idx, return_counts=True)
     print(f"Responses per operational item: mean={counts.mean():.0f}, "
           f"min={counts.min()}, max={counts.max()}")
@@ -246,12 +232,9 @@ def main():
           f"{with_id['difficulty_pearson'] - baseline['difficulty_pearson']:+.4f}")
     print(f"Discrimination recovery improvement (with_item_id - baseline): "
           f"{with_id['discrimination_pearson'] - baseline['discrimination_pearson']:+.4f}")
-    print("\nA meaningful positive gap here means adding item ID as a feature is a cheap,")
-    print("easy win for Warm-start (and partially Jump-start) recalibration specifically --")
-    print("no NLP work required, just a code change to FEATURE_COLUMNS and the M-step's")
-    print("training/query feature construction. A small or negative gap means the raw")
-    print("features already let the model separate operational items well enough on their")
-    print("own, and this specific paper-vs-implementation gap isn't where the payoff is.")
+    print("\nMeaningful positive gap -> item ID is a cheap win for Warm-start (and partly")
+    print("Jump-start) recalibration. Small/negative gap -> raw features already separate")
+    print("operational items well enough, not where the payoff is.")
 
 
 if __name__ == "__main__":

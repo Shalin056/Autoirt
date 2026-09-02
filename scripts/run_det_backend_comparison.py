@@ -2,52 +2,26 @@
 run_det_backend_comparison.py
 ==============================
 
-Every DET-phase run so far (Week 3's report, both replication passes,
-the adaptive-selection work) used config.DET_BACKEND_OVERRIDE =
-"ensemble" for speed. Whether the ensemble backend itself explains part
-of the jump-start/warm-start gap against the paper's numbers was flagged
-back in the Week 3 report as an open lead ("I'd like your take on
-whether that's worth chasing with more simulation tuning or a backend
-change") and never actually tested at DET scale -- run_backend_comparision.py
-only compares backends on the abstract single-item-type simulation
-(run_experiment.py's setting), not the two-item-type DET setup with its
-six split conditions.
+Compares ensemble vs. AutoGluon backends on all 12 DET conditions
+(2 item types x 6 splits), using IDENTICAL simulated data/splits for
+both, so any difference isolates the backend choice. Every prior DET
+run used the ensemble backend for speed; this checks whether that
+choice explains any of the gap vs. the paper.
 
-This fills that gap directly: runs all 12 DET conditions (2 item types x
-6 splits) through BOTH backends on IDENTICAL simulated data and splits,
-so any difference in the results isolates the backend choice specifically
--- nothing else differs between the two passes.
+Small-scale settings (150 Y/N Vocab / 80 ViC items, 6,000 sessions),
+not full DET scale -- AutoGluon is much slower per fit, and small scale
+already validated as a reliable stand-in for the Cold/Jump/Warm
+*pattern* (see run_det_experiment_replicated.py).
 
-Deliberately uses the SAME small-scale DET settings as
-run_det_experiment_replicated.py (150 Y/N Vocab / 80 ViC items, 6,000
-sessions) rather than the full 3,290/585-item DET scale. Two reasons:
-  1. AutoGluon is meaningfully slower per fit than the ensemble backend
-     (see run_backend_comparision.py's own note on this), and running
-     12 conditions x AutoGluon at full DET scale would be a multi-hour
-     to multi-day commitment just to test a single hypothesis.
-  2. The small-scale settings are already validated as a reliable stand-in
-     for the Cold/Jump/Warm *pattern* (run_det_experiment_replicated.py's
-     10-replication check confirmed this), even though absolute gap size
-     against the paper needs full scale to judge -- this script is asking
-     "does the backend change the pattern/gap at all", not "what is the
-     exact full-scale gap", so the small scale is the right tool here.
-
-Item selection is hardcoded to uniform random regardless of
-config.DET_ITEM_SELECTION, since adaptive-selection questions are a
-separate, already-answered line of investigation (see Week 4) and mixing
-that variable into a backend comparison would confound the result this
-script is trying to isolate.
+Item selection is hardcoded to random regardless of
+config.DET_ITEM_SELECTION -- adaptive selection is a separate, already-
+answered question, and mixing it in would confound this comparison.
 
 Needs autogluon.tabular installed first:
     pip install autogluon.tabular
 
 Run with:
     python scripts/run_det_backend_comparison.py
-
-Takes noticeably longer than a normal small-scale DET pass because of
-the AutoGluon half -- results are saved incrementally (same pattern as
-run_det_experiment.py's append_result_row) so a long run interrupted
-partway through doesn't lose completed conditions.
 """
 
 import sys
@@ -70,11 +44,17 @@ from run_det_experiment import (
 COMPARISON_N_YN_VOCAB_ITEMS = 150
 COMPARISON_N_VIC_ITEMS = 80
 COMPARISON_N_DET_SESSIONS = 6000
-COMPARISON_SEED = 42  # distinct from config.DET_RANDOM_SEED (42 is also the
-                       # default there, but this script's data is independently
-                       # simulated, not reused from any other run's CSV)
+COMPARISON_SEED = 42  # independent of config.DET_RANDOM_SEED -- this script's
+                       # data is freshly simulated, not reused from another run
 
 BACKENDS_TO_COMPARE = ["ensemble", "autogluon"]
+
+# One entry per item type: (label, n_items, chance_value, items_per_session, seed_offset).
+# seed_offset keeps Y/N Vocab and ViC's simulated data independent of each other.
+ITEM_TYPE_SETTINGS = [
+    ("Y/N Vocab", COMPARISON_N_YN_VOCAB_ITEMS, config.YN_CHANCE, config.YN_ITEMS_PER_SESSION, 0),
+    ("ViC", COMPARISON_N_VIC_ITEMS, config.VIC_CHANCE, config.VIC_ITEMS_PER_SESSION, 100),
+]
 
 RESULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "results", "det_backend_comparison.csv")
 RESULT_FIELDNAMES = ["backend", "item_type", "split", "n_steps_run", "stopped_reason",
@@ -94,9 +74,9 @@ def append_result_row(row: dict):
 
 def build_conditions(item_type_name: str, n_items: int, chance_value: float,
                       items_per_session: int, random_seed: int):
-    """Simulates items/sessions/responses ONCE (uniform random selection,
-    fixed seed) and returns the 6 (split_name, train, test) tuples shared
-    by both backend passes, so the two backends see byte-identical data."""
+    """Builds items/sessions/responses ONCE and returns the 6
+    (split_name, train, test) tuples, reused by both backends so they
+    see byte-identical data."""
     items = simulate_det_items(n_items=n_items, chance_value=chance_value, random_seed=random_seed)
     sessions = simulate_det_sessions(n_sessions=COMPARISON_N_DET_SESSIONS, random_seed=random_seed + 1)
     theta_key = "yn_theta" if item_type_name == "Y/N Vocab" else "vic_theta"
@@ -173,9 +153,15 @@ def print_summary_table(all_results: list):
               f"{row['item_grade_pearson_r']:>10.3f}{row['item_grade_spearman_r']:>10.3f}"
               f"{row['test_loss_nll']:>8.3f}{row['n_steps_run']:>8}{row['elapsed_seconds']:>8.0f}")
 
+    # Look up each (backend, item_type, split)'s Pearson so the diff
+    # loop below can find the matching ensemble/autogluon pair.
+    by_key = {}
+    for r in all_results:
+        key = (r["backend"], r["item_type"], r["split"])
+        by_key[key] = r["item_grade_pearson_r"]
+
     print("\nPer-condition Pearson difference (AutoGluon minus ensemble) -- positive means")
     print("AutoGluon calibrated better on this condition:")
-    by_key = {(r["backend"], r["item_type"], r["split"]): r["item_grade_pearson_r"] for r in all_results}
     for item_type in ["Y/N Vocab", "ViC"]:
         for split in ["Cold", "Jump 20", "Jump 40", "Jump 80", "Warm 05-08", "Warm 05-15"]:
             ensemble_val = by_key.get(("ensemble", item_type, split))
@@ -187,16 +173,13 @@ def print_summary_table(all_results: list):
 
 def main():
     if os.path.exists(RESULTS_PATH):
-        os.remove(RESULTS_PATH)  # fresh file for this run; rows appended as each condition finishes
+        os.remove(RESULTS_PATH)  # fresh file; rows appended as each condition finishes
 
     run_start_time = time.time()
     all_results = []
 
-    for item_type_name, n_items, chance_value, items_per_session, seed_offset in [
-        ("Y/N Vocab", COMPARISON_N_YN_VOCAB_ITEMS, config.YN_CHANCE, config.YN_ITEMS_PER_SESSION, 0),
-        ("ViC", COMPARISON_N_VIC_ITEMS, config.VIC_CHANCE, config.VIC_ITEMS_PER_SESSION, 100),
-    ]:
-        # Data/splits built ONCE per item type and reused for both backends,
+    for item_type_name, n_items, chance_value, items_per_session, seed_offset in ITEM_TYPE_SETTINGS:
+        # Data/splits built ONCE per item type, reused for both backends,
         # so the comparison isolates the backend and nothing else.
         items, theta, conditions = build_conditions(
             item_type_name, n_items, chance_value, items_per_session, COMPARISON_SEED + seed_offset,
